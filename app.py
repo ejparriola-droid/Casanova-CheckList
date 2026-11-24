@@ -1,229 +1,126 @@
-import streamlit as st
-import pandas as pd
-import requests
-import re
-from io import BytesIO
+                        respondidos += 1
+                    if respuesta == "Sí":
+                        cumplen += 1
+                    elif respuesta == "No":
+                        pendientes += 1
 
-# =====================================
-# CONFIGURACIÓN
-# =====================================
+                    st.divider()
 
-st.set_page_config(
-    page_title="Casanova CheckList",
-    page_icon="🚗",
-    layout="wide"
-)
-
-API_URL = "http://186.96.185.112:4000/api/logUnits/flotaVehicular/download"
-
-COLUMNAS = [
-    "Linea",
-    "Version",
-    "Modelo",
-    "Serie",
-    "Placa",
-    "Fecha Compra",
-    "Unidad de Negocio",
-    "Nombre Cliente",
-    "Almacen"
-]
-
-# =====================================
-# ESTILOS
-# =====================================
-
-st.markdown("""
-<style>
-.stApp {
-    background-color: #F5F7FB;
-}
-h1, h2, h3 {
-    color: #213769;
-}
-div.stButton > button {
-    background-color: #213769;
-    color: white;
-    border-radius: 8px;
-    border: none;
-    font-weight: bold;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# =====================================
-# FUNCIONES
-# =====================================
-
-@st.cache_data(ttl=300)
-def cargar_base():
-    respuesta = requests.get(API_URL, timeout=90)
-    respuesta.raise_for_status()
-
-    archivo = BytesIO(respuesta.content)
-
-    try:
-        df = pd.read_excel(archivo)
-    except Exception:
-        archivo.seek(0)
-        df = pd.read_csv(archivo)
-
-    df.columns = df.columns.astype(str).str.strip()
-
-    faltantes = [
-        columna for columna in COLUMNAS
-        if columna not in df.columns
-    ]
-
-    if faltantes:
-        raise ValueError(
-            "No se encontraron estas columnas: "
-            + ", ".join(faltantes)
-        )
-
-    df = df[COLUMNAS].copy()
-
-    df["Serie"] = df["Serie"].astype(str).str.strip()
-
-    df["Nombre Cliente"] = (
-        df["Nombre Cliente"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-
-    df.loc[
-        df["Nombre Cliente"].str.upper().isin(
-            ["", "SIN INFORMACION", "SIN INFORMACIÓN", "NAN", "NONE"]
-        ),
-        "Nombre Cliente"
-    ] = "SIN CONTRATO"
-
-    return df
-
-
-def normalizar_serie(valor):
-    if pd.isna(valor):
-        return ""
-    return re.sub(r"[^A-Z0-9]", "", str(valor).upper())
-
-
-# =====================================
-# ENCABEZADO
-# =====================================
-
-st.title("🚗 CASANOVA CHECKLIST")
-st.caption("CORPORATIVO | CONTROL DE TRÁMITES VEHICULARES")
-
-st.divider()
-
-# =====================================
-# CONEXIÓN CON BASE MAESTRA
-# =====================================
-
-col1, col2 = st.columns([3, 1])
-
-with col1:
-    st.subheader("Consulta de unidades")
-
-with col2:
-    if st.button("🔄 Actualizar base"):
-        cargar_base.clear()
-        st.rerun()
-
-try:
-    df = cargar_base()
-
-    st.success(
-        f"Base conectada correctamente | "
-        f"{len(df):,} vehículos disponibles"
-    )
-
-except Exception as e:
-    st.error(f"No fue posible consultar la base: {e}")
-    st.stop()
-
-# =====================================
-# BÚSQUEDA
-# =====================================
-
-st.markdown("### 🔎 Buscar vehículo")
-
-serie_busqueda = st.text_input(
-    "Ingresa los últimos 9 caracteres de la serie",
-    max_chars=9,
-    placeholder="Ejemplo: KK1234567"
-)
-
-if serie_busqueda:
-
-    serie_busqueda = normalizar_serie(serie_busqueda)
-
-    if len(serie_busqueda) != 9:
-        st.warning("Debes ingresar exactamente 9 caracteres.")
-        st.stop()
-
-    df["_serie_busqueda"] = df["Serie"].apply(normalizar_serie)
-
-    resultados = df[
-        df["_serie_busqueda"].str.endswith(
-            serie_busqueda,
-            na=False
-        )
-    ].copy()
-
-    if resultados.empty:
-        st.error("No encontramos ninguna unidad con esa serie.")
-
-    else:
-        st.success(
-            f"Encontramos {len(resultados)} coincidencia(s)."
-        )
-
-        if len(resultados) > 1:
-
-            opciones = resultados.index.tolist()
-
-            seleccion = st.selectbox(
-                "Encontramos varias unidades. Selecciona la correcta:",
-                opciones,
-                format_func=lambda i: (
-                    f"{resultados.loc[i, 'Serie']} | "
-                    f"{resultados.loc[i, 'Linea']} | "
-                    f"{resultados.loc[i, 'Placa']}"
-                )
+            porcentaje = round((respondidos / TOTAL_REQUISITOS) * 100)
+            st.markdown(
+                f"**Avance de captura: {respondidos}/{TOTAL_REQUISITOS} "
+                f"({porcentaje}%)**"
+            )
+            st.caption(
+                f"Cumplen: {cumplen} | Pendientes (NO): {pendientes} | "
+                f"Sin revisar: {TOTAL_REQUISITOS - respondidos}"
             )
 
-        else:
-            seleccion = resultados.index[0]
+            guardar = st.form_submit_button(
+                "💾 Guardar checklist",
+                use_container_width=True
+            )
 
-        unidad = resultados.loc[seleccion]
+        if guardar:
+            # Leer las respuestas actuales del estado para guardar el formulario.
+            respuestas_guardadas = {}
+            for categoria, requisitos in CHECKLIST.items():
+                for indice, requisito in enumerate(requisitos):
+                    nombre = requisito["nombre"]
+                    respuesta = st.session_state.get(
+                        crear_clave(categoria, indice), "Sin revisar"
+                    )
+                    fecha = st.session_state.get(
+                        f"fecha_{serie_id}_{categoria}_{indice}"
+                    )
+                    observacion = st.session_state.get(
+                        f"obs_{serie_id}_{categoria}_{indice}", ""
+                    )
+                    respuestas_guardadas[nombre] = {
+                        "categoria": categoria,
+                        "respuesta": respuesta,
+                        "fecha": fecha.isoformat() if fecha else "",
+                        "campo_fecha": requisito.get("fecha", ""),
+                        "observaciones": observacion.strip(),
+                    }
 
-        # =================================
-        # DATOS DE LA UNIDAD
-        # =================================
+            registro = construir_registro(unidad, respuestas_guardadas)
+            st.session_state.checklists_guardados.append(registro)
+            st.success(
+                "Checklist guardado en esta sesión. "
+                "Puedes descargar el historial en Excel."
+            )
+            st.rerun()
 
-        st.divider()
-        st.subheader("📋 Información del vehículo")
+# =====================================
+# HISTORIAL DE LA SESIÓN Y EXPORTACIÓN
+# =====================================
 
-        c1, c2, c3 = st.columns(3)
+st.divider()
+st.subheader("📚 Historial de checklists de esta sesión")
 
-        c1.metric("Línea", str(unidad["Linea"]))
-        c2.metric("Versión", str(unidad["Version"]))
-        c3.metric("Modelo", str(unidad["Modelo"]))
+historial = st.session_state.checklists_guardados
 
-        c1, c2, c3 = st.columns(3)
+if not historial:
+    st.info("Todavía no hay checklists guardados en esta sesión.")
+else:
+    resumen = []
+    detalle = []
 
-        c1.metric("Placa", str(unidad["Placa"]))
-        c2.metric("Unidad de negocio", str(unidad["Unidad de Negocio"]))
-        c3.metric("Cliente", str(unidad["Nombre Cliente"]))
-
-        st.write("**Serie completa:**", unidad["Serie"])
-        st.write("**Fecha de compra:**", str(unidad["Fecha Compra"]))
-        st.write("**Almacén:**", unidad["Almacen"])
-
-        st.divider()
-
-        st.info(
-            "Unidad identificada. El siguiente módulo será "
-            "el checklist de documentación vehicular."
+    for registro in historial:
+        respuestas = registro["respuestas"]
+        total_si = sum(1 for r in respuestas.values() if r["respuesta"] == "Sí")
+        total_no = sum(1 for r in respuestas.values() if r["respuesta"] == "No")
+        total_sin = sum(
+            1 for r in respuestas.values()
+            if r["respuesta"] == "Sin revisar"
         )
+        resumen.append({
+            "Fecha de revisión": registro["fecha_revision"],
+            "Serie": registro["serie"],
+            "Placa": registro["placa"],
+            "Línea": registro["linea"],
+            "Modelo": registro["modelo"],
+            "Cliente": registro["cliente"],
+            "Sí": total_si,
+            "No / Pendientes": total_no,
+            "Sin revisar": total_sin,
+        })
+
+        for nombre, respuesta in respuestas.items():
+            detalle.append({
+                "Fecha de revisión": registro["fecha_revision"],
+                "Serie": registro["serie"],
+                "Placa": registro["placa"],
+                "Categoría": respuesta["categoria"],
+                "Requisito": nombre,
+                "Resultado": respuesta["respuesta"],
+                "Campo de fecha": respuesta["campo_fecha"],
+                "Fecha capturada": respuesta["fecha"],
+                "Observaciones": respuesta["observaciones"],
+            })
+
+    df_resumen = pd.DataFrame(resumen)
+    df_detalle = pd.DataFrame(detalle)
+
+    st.dataframe(df_resumen, use_container_width=True, hide_index=True)
+
+    salida = BytesIO()
+    with pd.ExcelWriter(salida, engine="openpyxl") as writer:
+        df_resumen.to_excel(writer, sheet_name="Resumen", index=False)
+        df_detalle.to_excel(writer, sheet_name="Detalle", index=False)
+
+    st.download_button(
+        "📥 Descargar historial en Excel",
+        data=salida.getvalue(),
+        file_name="Casanova_Checklists.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+    st.warning(
+        "Importante: por ahora los registros se conservan durante la sesión "
+        "activa de Streamlit. Para conservarlos permanentemente entre sesiones "
+        "y usuarios, el siguiente paso es conectar una base de datos como "
+        "Supabase o PostgreSQL."
+    )
