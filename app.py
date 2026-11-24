@@ -1,126 +1,96 @@
-                        respondidos += 1
-                    if respuesta == "Sí":
-                        cumplen += 1
-                    elif respuesta == "No":
-                        pendientes += 1
-
-                    st.divider()
-
-            porcentaje = round((respondidos / TOTAL_REQUISITOS) * 100)
-            st.markdown(
-                f"**Avance de captura: {respondidos}/{TOTAL_REQUISITOS} "
-                f"({porcentaje}%)**"
-            )
-            st.caption(
-                f"Cumplen: {cumplen} | Pendientes (NO): {pendientes} | "
-                f"Sin revisar: {TOTAL_REQUISITOS - respondidos}"
-            )
-
-            guardar = st.form_submit_button(
-                "💾 Guardar checklist",
-                use_container_width=True
-            )
-
-        if guardar:
-            # Leer las respuestas actuales del estado para guardar el formulario.
-            respuestas_guardadas = {}
-            for categoria, requisitos in CHECKLIST.items():
-                for indice, requisito in enumerate(requisitos):
-                    nombre = requisito["nombre"]
-                    respuesta = st.session_state.get(
-                        crear_clave(categoria, indice), "Sin revisar"
-                    )
-                    fecha = st.session_state.get(
-                        f"fecha_{serie_id}_{categoria}_{indice}"
-                    )
-                    observacion = st.session_state.get(
-                        f"obs_{serie_id}_{categoria}_{indice}", ""
-                    )
-                    respuestas_guardadas[nombre] = {
-                        "categoria": categoria,
-                        "respuesta": respuesta,
-                        "fecha": fecha.isoformat() if fecha else "",
-                        "campo_fecha": requisito.get("fecha", ""),
-                        "observaciones": observacion.strip(),
-                    }
-
-            registro = construir_registro(unidad, respuestas_guardadas)
-            st.session_state.checklists_guardados.append(registro)
-            st.success(
-                "Checklist guardado en esta sesión. "
-                "Puedes descargar el historial en Excel."
-            )
-            st.rerun()
+import streamlit as st
+import pandas as pd
+import requests
+import re
+from io import BytesIO
+from datetime import date, datetime
 
 # =====================================
-# HISTORIAL DE LA SESIÓN Y EXPORTACIÓN
+# CONFIGURACIÓN
 # =====================================
 
-st.divider()
-st.subheader("📚 Historial de checklists de esta sesión")
+st.set_page_config(
+    page_title="Casanova CheckList",
+    page_icon="🚗",
+    layout="wide"
+)
 
-historial = st.session_state.checklists_guardados
+API_URL = "http://186.96.185.112:4000/api/logUnits/flotaVehicular/download"
 
-if not historial:
-    st.info("Todavía no hay checklists guardados en esta sesión.")
-else:
-    resumen = []
-    detalle = []
+COLUMNAS = [
+    "Linea",
+    "Version",
+    "Modelo",
+    "Serie",
+    "Placa",
+    "Fecha Compra",
+    "Unidad de Negocio",
+    "Nombre Cliente",
+    "Almacen"
+]
 
-    for registro in historial:
-        respuestas = registro["respuestas"]
-        total_si = sum(1 for r in respuestas.values() if r["respuesta"] == "Sí")
-        total_no = sum(1 for r in respuestas.values() if r["respuesta"] == "No")
-        total_sin = sum(
-            1 for r in respuestas.values()
-            if r["respuesta"] == "Sin revisar"
-        )
-        resumen.append({
-            "Fecha de revisión": registro["fecha_revision"],
-            "Serie": registro["serie"],
-            "Placa": registro["placa"],
-            "Línea": registro["linea"],
-            "Modelo": registro["modelo"],
-            "Cliente": registro["cliente"],
-            "Sí": total_si,
-            "No / Pendientes": total_no,
-            "Sin revisar": total_sin,
-        })
+# Requisitos y fechas que se solicitan cuando corresponda.
+# La fecha se captura como dato de apoyo; no sustituye la validación documental.
+CHECKLIST = {
+    "Documentación de circulación": [
+        {"nombre": "Tarjeta de circulación vigente", "fecha": "Fecha de vigencia"},
+        {"nombre": "Placa delantera"},
+        {"nombre": "Placa trasera"},
+        {"nombre": "Calcomanía o engomado de circulación"},
+        {"nombre": "Permiso provisional para circular (si aplica)", "fecha": "Fecha de vencimiento del permiso"},
+    ],
+    "Pagos vehiculares": [
+        {"nombre": "Tenencia pagada (si aplica)", "fecha": "Fecha de pago de tenencia"},
+        {"nombre": "Refrendo vehicular pagado", "fecha": "Fecha de pago de refrendo"},
+        {"nombre": "Adeudos de tenencia anteriores"},
+        {"nombre": "Multas de tránsito pendientes"},
+        {"nombre": "Infracciones vehiculares pendientes"},
+    ],
+    "Verificación vehicular": [
+        {"nombre": "Verificación vehicular vigente", "fecha": "Fecha de vigencia de verificación"},
+        {"nombre": "Holograma de verificación"},
+        {"nombre": "Constancia de verificación", "fecha": "Fecha de emisión de constancia"},
+        {"nombre": "Sin adeudos o restricciones que impidan verificar"},
+    ],
+    "Seguro vehicular": [
+        {"nombre": "Seguro de responsabilidad civil vigente"},
+        {"nombre": "Póliza de seguro vigente", "fecha": "Fecha de vigencia de póliza"},
+        {"nombre": "Comprobante de pago del seguro", "fecha": "Fecha de pago del seguro"},
+        {"nombre": "Fecha de vencimiento del seguro", "fecha": "Fecha de vencimiento del seguro"},
+    ],
+}
 
-        for nombre, respuesta in respuestas.items():
-            detalle.append({
-                "Fecha de revisión": registro["fecha_revision"],
-                "Serie": registro["serie"],
-                "Placa": registro["placa"],
-                "Categoría": respuesta["categoria"],
-                "Requisito": nombre,
-                "Resultado": respuesta["respuesta"],
-                "Campo de fecha": respuesta["campo_fecha"],
-                "Fecha capturada": respuesta["fecha"],
-                "Observaciones": respuesta["observaciones"],
-            })
+TOTAL_REQUISITOS = sum(len(items) for items in CHECKLIST.values())
 
-    df_resumen = pd.DataFrame(resumen)
-    df_detalle = pd.DataFrame(detalle)
+# =====================================
+# ESTILOS
+# =====================================
 
-    st.dataframe(df_resumen, use_container_width=True, hide_index=True)
+st.markdown("""
+<style>
+.stApp { background-color: #F5F7FB; }
+h1, h2, h3 { color: #213769; }
+div.stButton > button {
+    background-color: #213769;
+    color: white;
+    border-radius: 8px;
+    border: none;
+    font-weight: bold;
+}
+div[data-testid="stMetric"] {
+    background: white;
+    border: 1px solid #E5EAF2;
+    padding: 12px;
+    border-radius: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-    salida = BytesIO()
-    with pd.ExcelWriter(salida, engine="openpyxl") as writer:
-        df_resumen.to_excel(writer, sheet_name="Resumen", index=False)
-        df_detalle.to_excel(writer, sheet_name="Detalle", index=False)
+# =====================================
+# FUNCIONES
+# =====================================
 
-    st.download_button(
-        "📥 Descargar historial en Excel",
-        data=salida.getvalue(),
-        file_name="Casanova_Checklists.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-
-    st.warning(
-        "Importante: por ahora los registros se conservan durante la sesión "
-        "activa de Streamlit. Para conservarlos permanentemente entre sesiones "
-        "y usuarios, el siguiente paso es conectar una base de datos como "
-        "Supabase o PostgreSQL."
-    )
+@st.cache_data(ttl=300)
+def cargar_base():
+    respuesta = requests.get(API_URL, timeout=90)
+    respuesta.raise_for_status()
