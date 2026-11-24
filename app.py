@@ -68,55 +68,92 @@ TOTAL_REQUISITOS = sum(len(items) for items in CHECKLIST.values())
 
 st.markdown("""
 <style>
-/* Paleta de alto contraste: solo se modifican colores */
+/* Paleta clara y de alto contraste */
 .stApp {
-    background-color: #F3F6FA;
-    color: #172B4D;
-}
-h1, h2, h3, h4 {
-    color: #163A5F;
+    background-color: #F4F7FB !important;
+    color: #172B4D !important;
 }
 
-/* Texto general y etiquetas */
-.stMarkdown, label, p, span, div {
-    color: inherit;
+/* Encabezados y texto */
+h1, h2, h3, h4,
+[data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stWidgetLabel"],
+.stRadio label,
+.stRadio label p,
+label {
+    color: #17365D !important;
 }
 
-/* Botones */
+/* Texto secundario y ayudas: gris oscuro legible */
+small, [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p,
+.stTextInput p, .stDateInput p {
+    color: #52657D !important;
+}
+
+/* Entradas: fondo blanco y texto oscuro (evita campos negros) */
+input,
+textarea,
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea,
+[data-baseweb="select"] > div,
+[data-testid="stDateInput"] input,
+[data-testid="stTextInput"] input {
+    background-color: #FFFFFF !important;
+    color: #172B4D !important;
+    -webkit-text-fill-color: #172B4D !important;
+    border: 1px solid #AAB8C8 !important;
+}
+
+/* Texto de ejemplo dentro de los campos */
+input::placeholder,
+textarea::placeholder {
+    color: #718096 !important;
+    opacity: 1 !important;
+}
+
+/* Icono del calendario y controles */
+[data-testid="stDateInput"] button,
+[data-baseweb="input"] button {
+    color: #17365D !important;
+}
+
+/* Botones principales y de descarga */
 div.stButton > button,
 div.stDownloadButton > button,
-button[kind="primary"] {
-    background-color: #174A7E;
-    color: #FFFFFF;
-    border: 1px solid #123B65;
+button[kind="primary"],
+button[kind="secondaryFormSubmit"] {
+    background-color: #174A7E !important;
+    color: #FFFFFF !important;
+    border: 1px solid #123B65 !important;
     border-radius: 8px;
     font-weight: bold;
 }
 div.stButton > button:hover,
 div.stDownloadButton > button:hover {
-    background-color: #0F355B;
-    color: #FFFFFF;
-    border-color: #0F355B;
+    background-color: #0F355B !important;
+    color: #FFFFFF !important;
 }
 
 /* Tarjetas de indicadores */
 div[data-testid="stMetric"] {
-    background: #FFFFFF;
-    border: 1px solid #C7D2E0;
-    color: #172B4D;
+    background: #FFFFFF !important;
+    border: 1px solid #C7D2E0 !important;
+    color: #172B4D !important;
     padding: 12px;
     border-radius: 10px;
 }
-
-/* Mensajes de estado */
-div[data-testid="stAlert"] {
-    border: 1px solid #B8C7D9;
+div[data-testid="stMetric"] label,
+div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: #17365D !important;
 }
 
-/* Campos de captura */
-input, textarea, [data-baseweb="select"] > div {
-    background-color: #FFFFFF;
-    color: #172B4D;
+/* Separadores y avisos */
+hr {
+    border-color: #C7D2E0 !important;
+}
+div[data-testid="stAlert"] {
+    border: 1px solid #B8C7D9 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -479,3 +516,4 @@ else:
         "y usuarios, el siguiente paso es conectar una base de datos como "
         "Supabase o PostgreSQL."
     )
+
