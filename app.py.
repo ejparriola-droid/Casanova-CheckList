@@ -1,0 +1,230 @@
+
+import streamlit as st
+import pandas as pd
+import requests
+import re
+from io import BytesIO
+
+# =====================================
+# CONFIGURACIÓN
+# =====================================
+
+st.set_page_config(
+    page_title="Casanova CheckList",
+    page_icon="🚗",
+    layout="wide"
+)
+
+API_URL = "http://186.96.185.112:4000/api/logUnits/flotaVehicular/download"
+
+COLUMNAS = [
+    "Linea",
+    "Version",
+    "Modelo",
+    "Serie",
+    "Placa",
+    "Fecha Compra",
+    "Unidad de Negocio",
+    "Nombre Cliente",
+    "Almacen"
+]
+
+# =====================================
+# ESTILOS
+# =====================================
+
+st.markdown("""
+<style>
+.stApp {
+    background-color: #F5F7FB;
+}
+h1, h2, h3 {
+    color: #213769;
+}
+div.stButton > button {
+    background-color: #213769;
+    color: white;
+    border-radius: 8px;
+    border: none;
+    font-weight: bold;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# =====================================
+# FUNCIONES
+# =====================================
+
+@st.cache_data(ttl=300)
+def cargar_base():
+    respuesta = requests.get(API_URL, timeout=90)
+    respuesta.raise_for_status()
+
+    archivo = BytesIO(respuesta.content)
+
+    try:
+        df = pd.read_excel(archivo)
+    except Exception:
+        archivo.seek(0)
+        df = pd.read_csv(archivo)
+
+    df.columns = df.columns.astype(str).str.strip()
+
+    faltantes = [
+        columna for columna in COLUMNAS
+        if columna not in df.columns
+    ]
+
+    if faltantes:
+        raise ValueError(
+            "No se encontraron estas columnas: "
+            + ", ".join(faltantes)
+        )
+
+    df = df[COLUMNAS].copy()
+
+    df["Serie"] = df["Serie"].astype(str).str.strip()
+
+    df["Nombre Cliente"] = (
+        df["Nombre Cliente"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    df.loc[
+        df["Nombre Cliente"].str.upper().isin(
+            ["", "SIN INFORMACION", "SIN INFORMACIÓN", "NAN", "NONE"]
+        ),
+        "Nombre Cliente"
+    ] = "SIN CONTRATO"
+
+    return df
+
+
+def normalizar_serie(valor):
+    if pd.isna(valor):
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", str(valor).upper())
+
+
+# =====================================
+# ENCABEZADO
+# =====================================
+
+st.title("🚗 CASANOVA CHECKLIST")
+st.caption("CORPORATIVO | CONTROL DE TRÁMITES VEHICULARES")
+
+st.divider()
+
+# =====================================
+# CONEXIÓN CON BASE MAESTRA
+# =====================================
+
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    st.subheader("Consulta de unidades")
+
+with col2:
+    if st.button("🔄 Actualizar base"):
+        cargar_base.clear()
+        st.rerun()
+
+try:
+    df = cargar_base()
+
+    st.success(
+        f"Base conectada correctamente | "
+        f"{len(df):,} vehículos disponibles"
+    )
+
+except Exception as e:
+    st.error(f"No fue posible consultar la base: {e}")
+    st.stop()
+
+# =====================================
+# BÚSQUEDA
+# =====================================
+
+st.markdown("### 🔎 Buscar vehículo")
+
+serie_busqueda = st.text_input(
+    "Ingresa los últimos 9 caracteres de la serie",
+    max_chars=9,
+    placeholder="Ejemplo: KK1234567"
+)
+
+if serie_busqueda:
+
+    serie_busqueda = normalizar_serie(serie_busqueda)
+
+    if len(serie_busqueda) != 9:
+        st.warning("Debes ingresar exactamente 9 caracteres.")
+        st.stop()
+
+    df["_serie_busqueda"] = df["Serie"].apply(normalizar_serie)
+
+    resultados = df[
+        df["_serie_busqueda"].str.endswith(
+            serie_busqueda,
+            na=False
+        )
+    ].copy()
+
+    if resultados.empty:
+        st.error("No encontramos ninguna unidad con esa serie.")
+
+    else:
+        st.success(
+            f"Encontramos {len(resultados)} coincidencia(s)."
+        )
+
+        if len(resultados) > 1:
+
+            opciones = resultados.index.tolist()
+
+            seleccion = st.selectbox(
+                "Encontramos varias unidades. Selecciona la correcta:",
+                opciones,
+                format_func=lambda i: (
+                    f"{resultados.loc[i, 'Serie']} | "
+                    f"{resultados.loc[i, 'Linea']} | "
+                    f"{resultados.loc[i, 'Placa']}"
+                )
+            )
+
+        else:
+            seleccion = resultados.index[0]
+
+        unidad = resultados.loc[seleccion]
+
+        # =================================
+        # DATOS DE LA UNIDAD
+        # =================================
+
+        st.divider()
+        st.subheader("📋 Información del vehículo")
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric("Línea", str(unidad["Linea"]))
+        c2.metric("Versión", str(unidad["Version"]))
+        c3.metric("Modelo", str(unidad["Modelo"]))
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric("Placa", str(unidad["Placa"]))
+        c2.metric("Unidad de negocio", str(unidad["Unidad de Negocio"]))
+        c3.metric("Cliente", str(unidad["Nombre Cliente"]))
+
+        st.write("**Serie completa:**", unidad["Serie"])
+        st.write("**Fecha de compra:**", str(unidad["Fecha Compra"]))
+        st.write("**Almacén:**", unidad["Almacen"])
+
+        st.divider()
+
+        st.info(
+            "Unidad identificada. El siguiente módulo será "
+            "el checklist de documentación vehicular."
+        )
