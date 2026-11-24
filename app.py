@@ -68,20 +68,55 @@ TOTAL_REQUISITOS = sum(len(items) for items in CHECKLIST.values())
 
 st.markdown("""
 <style>
-.stApp { background-color: #F5F7FB; }
-h1, h2, h3 { color: #213769; }
-div.stButton > button {
-    background-color: #213769;
-    color: white;
+/* Paleta de alto contraste: solo se modifican colores */
+.stApp {
+    background-color: #F3F6FA;
+    color: #172B4D;
+}
+h1, h2, h3, h4 {
+    color: #163A5F;
+}
+
+/* Texto general y etiquetas */
+.stMarkdown, label, p, span, div {
+    color: inherit;
+}
+
+/* Botones */
+div.stButton > button,
+div.stDownloadButton > button,
+button[kind="primary"] {
+    background-color: #174A7E;
+    color: #FFFFFF;
+    border: 1px solid #123B65;
     border-radius: 8px;
-    border: none;
     font-weight: bold;
 }
+div.stButton > button:hover,
+div.stDownloadButton > button:hover {
+    background-color: #0F355B;
+    color: #FFFFFF;
+    border-color: #0F355B;
+}
+
+/* Tarjetas de indicadores */
 div[data-testid="stMetric"] {
-    background: white;
-    border: 1px solid #E5EAF2;
+    background: #FFFFFF;
+    border: 1px solid #C7D2E0;
+    color: #172B4D;
     padding: 12px;
     border-radius: 10px;
+}
+
+/* Mensajes de estado */
+div[data-testid="stAlert"] {
+    border: 1px solid #B8C7D9;
+}
+
+/* Campos de captura */
+input, textarea, [data-baseweb="select"] > div {
+    background-color: #FFFFFF;
+    color: #172B4D;
 }
 </style>
 """, unsafe_allow_html=True)
