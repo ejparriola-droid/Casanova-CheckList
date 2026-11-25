@@ -478,7 +478,7 @@ st.sidebar.caption(ETIQUETAS.get(rol_actual, rol_actual))
 opciones = (["Capturar checklist"] if puede_capturar else []) + ["Historial", "Mi contraseña", "Dashboard"]
 if consulta_general:
     opciones.append("Carga de ASIG")
-if es_admin:
+if es_maestro:
     opciones.append("Administración")
 
 modulo = st.sidebar.radio(
@@ -1225,7 +1225,7 @@ elif modulo == "Carga de ASIG" and consulta_general:
 # ADMINISTRACIÓN
 # =====================================
 
-elif modulo == "Administración" and es_admin:
+elif modulo == "Administración" and es_maestro:
 
     st.subheader("⚙️ Administración")
 
