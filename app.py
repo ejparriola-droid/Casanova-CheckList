@@ -575,8 +575,8 @@ if modulo == "Capturar checklist" and puede_capturar:
 
         c1, c2, c3 = st.columns(3)
 
-        c1.metric("Línea", mostrar(unidad["Linea"]))
-        c2.metric("Marca", mostrar(unidad["Marca"]))
+        c1.metric("Marca", mostrar(unidad["Marca"]))
+        c2.metric("Línea", mostrar(unidad["Linea"]))
         c3.metric("Modelo", mostrar(unidad["Modelo"]))
 
         c1, c2, c3 = st.columns(3)
@@ -984,7 +984,7 @@ elif modulo == "Dashboard":
         if pendientes_excel:
             st.download_button("Descargar pendientes Excel", excel_concentrado(pd.DataFrame(pendientes_excel)), "Pendientes_Casanova.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.divider()
-        def estilo(fig, altura=290):
+        def estilo(fig, altura=330):
             fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
             return fig
         def seleccion(fig, key, destino):
@@ -1016,13 +1016,29 @@ elif modulo == "Dashboard":
             fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
             st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
         st.markdown("### Cumplimiento por documento")
-        resumen_doc = largo.groupby(["Requisito", "Respuesta"]).size().reset_index(name="Unidades")
-        fig = px.bar(resumen_doc, y="Requisito", x="Unidades", color="Respuesta", orientation="h", color_discrete_map=colores, custom_data=["Requisito", "Respuesta"], text="Unidades")
-        fig.update_layout(barmode="stack", yaxis_title="", xaxis_title="Unidades")
-        seleccion(fig, f"dash_docs_{st.session_state.get('dash_reset',0)}", "documento")
+        st.caption("Pulsa los botones debajo de cada dona o selecciona una barra para actualizar el detalle superior.")
+        for inicio in range(0,len(activos),3):
+            cols = st.columns(3)
+            for col,r in zip(cols,activos[inicio:inicio+3]):
+                with col:
+                    nombre = nombres[r["id"]]
+                    g = largo[largo["Requisito"] == nombre]["Respuesta"].value_counts()
+                    si=int(g.get("SÍ",0)); no=int(g.get("NO",0)); na=int(g.get("NO APLICA",0)); hist=n-si-no-na
+                    pct=f"{si/(n-na):.0%}" if n>na else "N/A"
+                    st.markdown(f"**{nombre}**")
+                    fig=go.Figure(go.Pie(labels=["SÍ","NO","NO APLICA","Histórico"],values=[si,no,na,hist],hole=.72,marker_colors=[colores["SÍ"],colores["NO"],colores["NO APLICA"],colores["SIN REVISAR"]],textinfo="none",sort=False))
+                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=27)
+                    fig.update_layout(showlegend=False)
+                    fig.update_traces(marker=dict(line=dict(color="#FFFFFF", width=2)))
+                    st.plotly_chart(estilo(fig,190),theme=None,use_container_width=True,key=f"doc_{r['id']}")
+                    st.caption(f"SÍ: {si:,}  |  NO: {no:,}  |  N/A: {na:,}" + (f"  |  Histórico: {hist:,}" if hist else ""))
+                    botones = st.columns(3)
+                    for boton, estado, cantidad in zip(botones, ["SÍ", "NO", "NO APLICA"], [si,no,na]):
+                        boton.button(f"{estado}: {cantidad}", key=f"doc_sel_{r['id']}_{estado}",
+                                     on_click=aplicar_seleccion, args=("documento", (nombre,estado)))
         st.markdown("### Comparativo por sucursal")
         resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
-        fig=px.bar(resumen,y="Sucursal",x="Unidades",orientation="h",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
+        fig=px.bar(resumen,x="Sucursal",y="Unidades",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
         fig.update_traces(textposition="outside", cliponaxis=False)
         seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal")
         with st.expander("Consultar detalle por sucursal"):
