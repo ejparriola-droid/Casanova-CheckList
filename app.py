@@ -33,9 +33,14 @@ COLUMNAS = [
     "Almacen"
 ]
 
-ESTADOS_EXCLUIDOS = [
-    "Orden de Servicio Cerrada por el gestor",
-    "Orden de Servicio Cancelada"
+ESTADOS_PERMITIDOS = [
+    "Confirmación de servicio",
+    "Orden de Servicio Cerrada por el Cliente",
+    "Solicitud en Aprobación",
+    "Carga de documentos",
+    "Validación de documentos",
+    "Orden de Servicio Finalizada",
+    "Orden de Servicio en Proceso"
 ]
 
 # =====================================
@@ -105,6 +110,22 @@ def normalizar_texto(valor):
         if not unicodedata.combining(c)
     )
     return " ".join(texto.split())
+
+
+def interpretar_fecha(valor):
+    if pd.isna(valor) or not str(valor).strip():
+        return None
+    texto = str(valor).strip()
+    # Excel puede entregar fechas como objetos o texto ISO.
+    if re.match(r"^\d{4}-\d{2}-\d{2}", texto):
+        fecha = pd.to_datetime(texto, errors="coerce", yearfirst=True)
+    else:
+        fecha = pd.to_datetime(texto, errors="coerce", dayfirst=True)
+    if pd.isna(fecha):
+        return None
+    if fecha.tzinfo is not None:
+        fecha = fecha.tz_convert("America/Mexico_City").tz_localize(None)
+    return fecha.isoformat()
 
 
 def mostrar(valor):
@@ -490,37 +511,47 @@ if modulo == "Capturar checklist":
 
         try:
 
-            folios = (
-                db.table("atenciones_vehiculo")
-                .select("folio,estado_atencion")
-                .eq("serie", serie)
-                .execute()
-                .data
-            )
+            folios = []
+            inicio = 0
+            while True:
+                bloque = (
+                    db.table("atenciones_vehiculo")
+                    .select("folio,conceptos,estado_atencion,fecha_creacion")
+                    .eq("serie", serie)
+                    .order("id")
+                    .range(inicio, inicio + 499)
+                    .execute().data or []
+                )
+                folios.extend(bloque)
+                if len(bloque) < 500:
+                    break
+                inicio += 500
 
-            excluidos = {
-                normalizar_texto(e)
-                for e in ESTADOS_EXCLUIDOS
-            }
-
-            folios = [
-                f for f in folios
-                if normalizar_texto(
-                    f["estado_atencion"]
-                ) not in excluidos
-            ]
+            permitidos = {normalizar_texto(e) for e in ESTADOS_PERMITIDOS}
+            folios = [f for f in folios if normalizar_texto(
+                f["estado_atencion"]) in permitidos]
 
             if folios:
-
-                st.dataframe(
-                    pd.DataFrame(folios).rename(columns={
-                        "folio": "Folio",
-                        "estado_atencion": "Estado de atención"
-                    }),
-                    hide_index=True,
-                    use_container_width=True
+                tabla = pd.DataFrame(folios)
+                fechas = pd.to_datetime(
+                    tabla["fecha_creacion"], format="mixed", errors="coerce"
                 )
-
+                hoy = pd.Timestamp.now(tz="America/Mexico_City").tz_localize(None).normalize()
+                tabla["dias"] = (hoy - fechas.dt.normalize()).dt.days.astype("Int64")
+                tabla["conceptos"] = tabla["conceptos"].apply(mostrar)
+                tabla["fecha_creacion"] = fechas.dt.strftime("%d/%m/%Y %H:%M").fillna("Sin información")
+                tabla = tabla.sort_values("dias", ascending=False, na_position="last")
+                tabla = tabla.rename(columns={
+                    "folio": "Folio",
+                    "conceptos": "Conceptos",
+                    "estado_atencion": "Estado de atención",
+                    "fecha_creacion": "Fecha de creación",
+                    "dias": "Días desde creación"
+                })
+                st.metric("Folios ASIG", len(tabla))
+                st.dataframe(tabla[["Folio", "Conceptos", "Estado de atención",
+                    "Fecha de creación", "Días desde creación"]],
+                    hide_index=True, use_container_width=True)
             else:
                 st.info("Sin folios ASIG visibles.")
 
@@ -847,7 +878,7 @@ elif modulo == "Carga de ASIG" and es_admin:
 
     st.info(
         "El Excel debe contener Serie del Vehículo, "
-        "Folio y Estado de atención."
+        "Folio, Estado de atención, Conceptos y Fecha de creación."
     )
 
     archivo = st.file_uploader(
@@ -872,7 +903,9 @@ elif modulo == "Carga de ASIG" and es_admin:
             columnas = [
                 "serie del vehiculo",
                 "folio",
-                "estado de atencion"
+                "estado de atencion",
+                "conceptos",
+                "fecha de creacion"
             ]
 
             faltantes = [
@@ -892,7 +925,9 @@ elif modulo == "Carga de ASIG" and es_admin:
             df.columns = [
                 "serie",
                 "folio",
-                "estado_atencion"
+                "estado_atencion",
+                "conceptos",
+                "fecha_creacion"
             ]
 
             df["serie"] = df["serie"].apply(
@@ -918,7 +953,19 @@ elif modulo == "Carga de ASIG" and es_admin:
                 keep="last"
             )
 
+            fechas_originales = df["fecha_creacion"].copy()
+            df["fecha_creacion"] = fechas_originales.apply(interpretar_fecha)
+            invalidas = fechas_originales.astype(str).str.strip().ne("") & df["fecha_creacion"].isna()
+            df["conceptos"] = df["conceptos"].str.strip()
             st.metric("Folios válidos", len(df))
+            st.caption(f"Folios sin fecha de creación: {df['fecha_creacion'].isna().sum():,}")
+            if invalidas.any():
+                st.error(f"Hay {invalidas.sum():,} fechas no reconocidas. Corrige el Excel antes de cargarlo.")
+                st.dataframe(df.loc[invalidas, ["serie", "folio"]].assign(fecha_original=fechas_originales[invalidas]), hide_index=True)
+                st.stop()
+            if df.empty:
+                st.warning("No hay folios válidos para cargar.")
+                st.stop()
 
             st.dataframe(
                 df.head(100),
