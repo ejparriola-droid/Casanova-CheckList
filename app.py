@@ -63,11 +63,12 @@ h1, h2, h3, h4, label {
 div[data-testid="stMetric"] {
     background: white;
     border: 1px solid #D2DCEB;
-    padding: 15px;
+    padding: 8px 12px;
     border-radius: 10px;
 }
 div[data-testid="stMetricValue"] {
     font-weight: 700;
+    font-size: 1.35rem;
     color: #213769;
 }
 div.stButton > button,
@@ -190,7 +191,7 @@ def consultar_tabla(tabla):
     return registros
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(show_spinner="Descargando base maestra...")
 def cargar_base():
 
     respuesta = requests.get(API_URL, timeout=90)
@@ -216,7 +217,10 @@ def cargar_base():
             "Columnas faltantes: " + ", ".join(faltantes)
         )
 
-    df = df[COLUMNAS].copy()
+    for campo in ["Marca", "Estatus", "Subestatus"]:
+        coincidencia = next((c for c in df.columns if normalizar_texto(c) == normalizar_texto(campo)), None)
+        df[campo] = df[coincidencia] if coincidencia else "Sin información"
+    df = df[COLUMNAS + ["Marca", "Estatus", "Subestatus"]].copy()
 
     df["Serie"] = df["Serie"].apply(normalizar_serie)
 
@@ -238,6 +242,7 @@ def cargar_base():
         "Nombre Cliente"
     ] = "SIN CONTRATO"
 
+    df.attrs["actualizada"] = datetime.now().astimezone().isoformat()
     return df
 
 
@@ -481,6 +486,14 @@ if consulta_general:
 if es_maestro:
     opciones.append("Administración")
 
+if st.sidebar.button("🔄 Actualizar base maestra"):
+    try:
+        cargar_base.clear()
+        cargar_base()
+        st.sidebar.success("Base actualizada")
+    except Exception:
+        st.sidebar.error("No se pudo actualizar la base.")
+
 modulo = st.sidebar.radio(
     "Menú principal",
     opciones
@@ -513,16 +526,11 @@ if modulo == "Capturar checklist" and puede_capturar:
         format_func=lambda x: mapa_sucursales[x]
     )
 
-    if st.button("🔄 Actualizar base maestra"):
-        cargar_base.clear()
-        st.rerun()
 
     try:
         df = cargar_base()
 
-        st.success(
-            f"Base conectada | {len(df):,} vehículos"
-        )
+        st.caption(f"Base conectada | {len(df):,} vehículos | Actualizada: {pd.Timestamp(df.attrs['actualizada']).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M')}")
 
     except Exception:
         st.error("No fue posible consultar la API maestra.")
@@ -568,7 +576,7 @@ if modulo == "Capturar checklist" and puede_capturar:
         c1, c2, c3 = st.columns(3)
 
         c1.metric("Línea", mostrar(unidad["Linea"]))
-        c2.metric("Versión", mostrar(unidad["Version"]))
+        c2.metric("Marca", mostrar(unidad["Marca"]))
         c3.metric("Modelo", mostrar(unidad["Modelo"]))
 
         c1, c2, c3 = st.columns(3)
@@ -588,10 +596,10 @@ if modulo == "Capturar checklist" and puede_capturar:
         st.write("**Serie completa:**", serie)
 
         st.write(
-            "**Fecha de compra:**",
-            mostrar(unidad["Fecha Compra"])
+            "**Estatus:**", mostrar(unidad["Estatus"])
         )
 
+        st.write("**Subestatus:**", mostrar(unidad["Subestatus"]))
         st.write(
             "**Almacén:**",
             mostrar(unidad["Almacen"])
@@ -797,43 +805,11 @@ if modulo == "Capturar checklist" and puede_capturar:
                 "observaciones": observaciones_generales
             }
 
-            revision_id = None
-
             try:
-
-                resultado = (
-                    db.table("checklist_revisiones")
-                    .insert(revision)
-                    .execute()
-                )
-
-                revision_id = resultado.data[0]["id"]
-
-                for r in respuestas:
-                    r["revision_id"] = revision_id
-
-                db.table(
-                    "checklist_respuestas"
-                ).insert(respuestas).execute()
-
-                st.success(
-                    f"Checklist guardado correctamente. "
-                    f"Registro: {revision_id}"
-                )
-
+                resultado = db.rpc("guardar_checklist_atomico", {"p_revision": revision, "p_respuestas": respuestas}).execute()
+                st.success(f"Checklist guardado correctamente. Registro: {resultado.data}")
             except Exception:
-
-                if revision_id is not None:
-                    st.error(
-                        f"Se creó la revisión {revision_id}, "
-                        "pero no se confirmaron sus respuestas. "
-                        "Solicita revisión al administrador."
-                    )
-                else:
-                    st.error(
-                        "No se confirmó el guardado del checklist. "
-                        "Revisa el historial antes de reintentar."
-                    )
+                st.error("No se confirmó el guardado. Revisa el historial antes de reintentar.")
 
 # =====================================
 # HISTORIAL
@@ -1008,7 +984,7 @@ elif modulo == "Dashboard":
         if pendientes_excel:
             st.download_button("Descargar pendientes Excel", excel_concentrado(pd.DataFrame(pendientes_excel)), "Pendientes_Casanova.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.divider()
-        def estilo(fig, altura=330):
+        def estilo(fig, altura=290):
             fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
             return fig
         def seleccion(fig, key, destino):
@@ -1040,29 +1016,13 @@ elif modulo == "Dashboard":
             fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
             st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
         st.markdown("### Cumplimiento por documento")
-        st.caption("Pulsa los botones debajo de cada dona o selecciona una barra para actualizar el detalle superior.")
-        for inicio in range(0,len(activos),3):
-            cols = st.columns(3)
-            for col,r in zip(cols,activos[inicio:inicio+3]):
-                with col:
-                    nombre = nombres[r["id"]]
-                    g = largo[largo["Requisito"] == nombre]["Respuesta"].value_counts()
-                    si=int(g.get("SÍ",0)); no=int(g.get("NO",0)); na=int(g.get("NO APLICA",0)); hist=n-si-no-na
-                    pct=f"{si/(n-na):.0%}" if n>na else "N/A"
-                    st.markdown(f"**{nombre}**")
-                    fig=go.Figure(go.Pie(labels=["SÍ","NO","NO APLICA","Histórico"],values=[si,no,na,hist],hole=.72,marker_colors=[colores["SÍ"],colores["NO"],colores["NO APLICA"],colores["SIN REVISAR"]],textinfo="none",sort=False))
-                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=27)
-                    fig.update_layout(showlegend=False)
-                    fig.update_traces(marker=dict(line=dict(color="#FFFFFF", width=2)))
-                    st.plotly_chart(estilo(fig,190),theme=None,use_container_width=True,key=f"doc_{r['id']}")
-                    st.caption(f"SÍ: {si:,}  |  NO: {no:,}  |  N/A: {na:,}" + (f"  |  Histórico: {hist:,}" if hist else ""))
-                    botones = st.columns(3)
-                    for boton, estado, cantidad in zip(botones, ["SÍ", "NO", "NO APLICA"], [si,no,na]):
-                        boton.button(f"{estado}: {cantidad}", key=f"doc_sel_{r['id']}_{estado}",
-                                     on_click=aplicar_seleccion, args=("documento", (nombre,estado)))
+        resumen_doc = largo.groupby(["Requisito", "Respuesta"]).size().reset_index(name="Unidades")
+        fig = px.bar(resumen_doc, y="Requisito", x="Unidades", color="Respuesta", orientation="h", color_discrete_map=colores, custom_data=["Requisito", "Respuesta"], text="Unidades")
+        fig.update_layout(barmode="stack", yaxis_title="", xaxis_title="Unidades")
+        seleccion(fig, f"dash_docs_{st.session_state.get('dash_reset',0)}", "documento")
         st.markdown("### Comparativo por sucursal")
         resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
-        fig=px.bar(resumen,x="Sucursal",y="Unidades",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
+        fig=px.bar(resumen,y="Sucursal",x="Unidades",orientation="h",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
         fig.update_traces(textposition="outside", cliponaxis=False)
         seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal")
         with st.expander("Consultar detalle por sucursal"):
