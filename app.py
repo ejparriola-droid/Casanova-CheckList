@@ -219,6 +219,65 @@ def cargar_base():
     return df
 
 
+def construir_concentrado(df, respuestas, requisitos):
+    columnas = {
+        "id": "ID revisión", "serie": "Serie", "placa": "Placa",
+        "linea": "Línea", "modelo": "Modelo", "unidad_negocio": "Unidad de negocio",
+        "nombre_cliente": "Nombre cliente", "almacen": "Almacén",
+        "usuario": "Usuario", "Sucursal": "Sucursal",
+        "Fecha de revisión": "Fecha de revisión", "estatus": "Estatus",
+        "observaciones": "Observaciones"
+    }
+    base = df[list(columnas)].copy().rename(columns=columnas)
+    detalle = {(r["revision_id"], r["requisito_id"]): r for r in respuestas}
+    usados = {r["requisito_id"] for r in respuestas}
+    for req in sorted(requisitos, key=lambda r: (r.get("orden") or 0, r["id"])):
+        if not req.get("activo") and req["id"] not in usados:
+            continue
+        nombre = req["requisito"].upper()
+        if nombre in base.columns:
+            nombre += f" ({req['id']})"
+        filas = [detalle.get((i, req["id"])) for i in base["ID revisión"]]
+        base[nombre] = ["No aplica a esta revisión" if r is None else "SÍ" if r.get("respuesta") is True else "NO" if r.get("respuesta") is False else "SIN REVISAR" for r in filas]
+        if req.get("requiere_fecha") or any(r and r.get("fecha_vencimiento") for r in filas):
+            campo = (req.get("nombre_campo_fecha") or f"FECHA {nombre}").upper()
+            if campo in base.columns:
+                campo += f" ({req['id']})"
+            base[campo] = pd.to_datetime([r.get("fecha_vencimiento") if r else None for r in filas], errors="coerce")
+    return base
+
+
+def excel_concentrado(df):
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    salida = BytesIO()
+    with pd.ExcelWriter(salida, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Concentrado", index=False)
+        ws = writer.sheets["Concentrado"]
+        ws.freeze_panes = "D2"
+        ws.auto_filter.ref = ws.dimensions
+        ws.row_dimensions[1].height = 32
+        for j, col in enumerate(df.columns, 1):
+            celda = ws.cell(1, j)
+            celda.fill = PatternFill("solid", fgColor="174A7E")
+            celda.font = Font(bold=True, color="FFFFFF")
+            celda.alignment = Alignment(wrap_text=True, vertical="center")
+            ancho = max([len(str(col))] + [len(str(v)) for v in df[col].dropna().head(1000)])
+            ws.column_dimensions[get_column_letter(j)].width = min(45, max(14, ancho + 3))
+            for fila in range(2, ws.max_row + 1):
+                c = ws.cell(fila, j)
+                if isinstance(c.value, datetime):
+                    c.number_format = "dd/mm/yyyy hh:mm" if col == "Fecha de revisión" else "dd/mm/yyyy"
+                elif isinstance(c.value, str):
+                    c.data_type = "s"
+                    colores = {"SÍ": ("E2F0D9", "216E39"), "NO": ("FCE4D6", "A4262C"), "SIN REVISAR": ("FFF2CC", "805B10")}
+                    if c.value in colores:
+                        fondo, letra = colores[c.value]
+                        c.fill = PatternFill("solid", fgColor=fondo)
+                        c.font = Font(color=letra)
+    return salida.getvalue()
+
+
 def descargar_excel(tablas, nombre):
 
     salida = BytesIO()
@@ -737,63 +796,51 @@ elif modulo == "Historial":
     st.subheader("📚 Historial de checklists")
 
     try:
+        revisiones = consultar_tabla("checklist_revisiones")
+        respuestas = consultar_tabla("checklist_respuestas")
+        requisitos = consultar_tabla("checklist_requisitos")
+        df = pd.DataFrame(revisiones)
 
-        revisiones = consultar_tabla(
-            "checklist_revisiones"
-        )
-
-        respuestas = consultar_tabla(
-            "checklist_respuestas"
-        )
-
-        requisitos = consultar_tabla(
-            "checklist_requisitos"
-        )
-
-        df_historial = pd.DataFrame(revisiones)
-        df_detalle = pd.DataFrame(respuestas)
-
-        if df_historial.empty:
+        if df.empty:
             st.info("No hay registros disponibles.")
-
         else:
-
-            df_historial["Sucursal"] = (
-                df_historial["sucursal_id"]
-                .map(mapa_sucursales)
-            )
-
-            df_historial = df_historial.sort_values(
-                "fecha_revision",
-                ascending=False
-            )
-
-            if not df_detalle.empty:
-
-                mapa_requisitos = {
-                    r["id"]: r["requisito"]
-                    for r in requisitos
-                }
-
-                df_detalle["Requisito"] = (
-                    df_detalle["requisito_id"]
-                    .map(mapa_requisitos)
-                )
-
-            st.dataframe(
-                df_historial,
-                hide_index=True,
-                use_container_width=True
-            )
-
-            descargar_excel(
-                {
-                    "Historial": df_historial,
-                    "Respuestas": df_detalle
-                },
-                "Casanova_Checklists.xlsx"
-            )
-
+            df["Sucursal"] = df["sucursal_id"].map(mapa_sucursales).fillna("Sin información")
+            df["Fecha de revisión"] = pd.to_datetime(df["fecha_revision"], utc=True, errors="coerce", format="mixed").dt.tz_convert("America/Mexico_City").dt.tz_localize(None)
+            df = df.sort_values("Fecha de revisión", ascending=False)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Revisiones", len(df))
+            c2.metric("Completas", int(df["estatus"].eq("Completo").sum()))
+            c3.metric("No completas", int(df["estatus"].ne("Completo").sum()))
+            a, b, c = st.columns(3)
+            texto = a.text_input("Serie o placa")
+            suc = b.selectbox("Sucursal", ["Todas"] + sorted(df["Sucursal"].unique().tolist()))
+            capt = c.selectbox("Capturista", ["Todos"] + sorted(df["usuario"].dropna().unique().tolist()))
+            a, b, c = st.columns(3)
+            estado = a.selectbox("Estatus", ["Todos"] + sorted(df["estatus"].dropna().unique().tolist()))
+            desde = b.date_input("Fecha inicial", value=None, format="DD/MM/YYYY")
+            hasta = c.date_input("Fecha final", value=None, format="DD/MM/YYYY")
+            if desde and hasta and desde > hasta:
+                st.warning("La fecha inicial debe ser anterior o igual a la final.")
+                st.stop()
+            if texto.strip():
+                t = texto.strip()
+                df = df[df["serie"].str.contains(t, case=False, regex=False, na=False) | df["placa"].str.contains(t, case=False, regex=False, na=False)]
+            if suc != "Todas":
+                df = df[df["Sucursal"].eq(suc)]
+            if capt != "Todos":
+                df = df[df["usuario"].eq(capt)]
+            if estado != "Todos":
+                df = df[df["estatus"].eq(estado)]
+            if desde:
+                df = df[df["Fecha de revisión"] >= pd.Timestamp(desde)]
+            if hasta:
+                df = df[df["Fecha de revisión"] < pd.Timestamp(hasta) + pd.Timedelta(days=1)]
+            concentrado = construir_concentrado(df, respuestas, requisitos)
+            st.caption(f"{len(concentrado):,} revisiones encontradas")
+            st.dataframe(concentrado, hide_index=True, use_container_width=True,
+                         column_config={col: st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm" if col == "Fecha de revisión" else "DD/MM/YYYY") for col in concentrado.columns if pd.api.types.is_datetime64_any_dtype(concentrado[col])})
+            if not concentrado.empty:
+                st.download_button("📥 Descargar concentrado Excel", data=excel_concentrado(concentrado), file_name="Casanova_Checklists.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     except Exception:
         st.error("No fue posible consultar el historial.")
 
