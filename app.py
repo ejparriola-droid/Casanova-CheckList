@@ -918,58 +918,6 @@ elif modulo == "Dashboard" and es_admin:
         c.metric("Unidades completas", f"{completos:,}")
         d.metric("Con pendientes (NO)", f"{pendientes:,}")
         st.caption("Última revisión por serie dentro de los filtros. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
-        def estilo(fig, altura=330):
-            fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
-            return fig
-        def seleccion(fig, key, destino):
-            evento = st.plotly_chart(estilo(fig), theme=None, use_container_width=True, key=key, on_select="rerun", selection_mode="points")
-            puntos = evento.selection.points
-            if puntos and puntos != st.session_state.get(key + "_ultima"):
-                st.session_state[key + "_ultima"] = puntos
-                p = puntos[-1]
-                datos = p.get("customdata")
-                if datos:
-                    st.session_state["dash_filtro"] = (destino, tuple(datos))
-            return evento
-        a,b = st.columns(2)
-        with a:
-            st.markdown("**Situación documental**")
-            conteo = ult["Resultado"].value_counts().rename_axis("Resultado").reset_index(name="Unidades")
-            fig = px.pie(conteo, names="Resultado", values="Unidades", hole=.68, color="Resultado", color_discrete_map=colores)
-            fig.update_traces(textinfo="value+percent", textposition="outside", outsidetextfont=dict(color="#213769"), marker=dict(line=dict(color="#FFFFFF", width=2)))
-            fig.add_annotation(text=f"<b>{n:,}</b>", x=.5,y=.5,showarrow=False,font_size=30)
-            st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
-        with b:
-            st.markdown("**Avance acumulado de unidades**")
-            primera = df.dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
-            avance = primera.groupby(primera["Fecha de revisión"].dt.normalize()).size().cumsum().rename("Unidades").reset_index()
-            fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#004876"])
-            fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
-            st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
-        st.markdown("### Cumplimiento por documento")
-        st.caption("Selecciona un requisito y una respuesta en el detalle inferior; también puedes seleccionar segmentos de las barras comparativas.")
-        for inicio in range(0,len(activos),3):
-            cols = st.columns(3)
-            for col,r in zip(cols,activos[inicio:inicio+3]):
-                with col:
-                    nombre = nombres[r["id"]]
-                    g = largo[largo["Requisito"] == nombre]["Respuesta"].value_counts()
-                    si=int(g.get("SÍ",0)); no=int(g.get("NO",0)); na=int(g.get("NO APLICA",0)); hist=n-si-no-na
-                    pct=f"{si/(n-na):.0%}" if n>na else "N/A"
-                    st.markdown(f"**{nombre}**")
-                    fig=go.Figure(go.Pie(labels=["SÍ","NO","NO APLICA","Histórico"],values=[si,no,na,hist],hole=.72,marker_colors=[colores["SÍ"],colores["NO"],colores["NO APLICA"],colores["SIN REVISAR"]],textinfo="none",sort=False))
-                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=27)
-                    fig.update_layout(showlegend=False)
-                    fig.update_traces(marker=dict(line=dict(color="#FFFFFF", width=2)))
-                    st.plotly_chart(estilo(fig,190),theme=None,use_container_width=True,key=f"doc_{r['id']}")
-                    st.caption(f"SÍ: {si:,}  |  NO: {no:,}  |  N/A: {na:,}" + (f"  |  Histórico: {hist:,}" if hist else ""))
-                    if st.button(f"Ver pendientes ({no})",key=f"pend_{r['id']}"):
-                        st.session_state["dash_filtro"]=("documento",(nombre,"NO"))
-        st.markdown("### Comparativo por sucursal")
-        resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
-        fig=px.bar(resumen,x="Sucursal",y="Unidades",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
-        fig.update_traces(textposition="outside", cliponaxis=False)
-        seleccion(fig,"dash_barras","sucursal")
         st.markdown("### Detalle de unidades")
         filtro=st.session_state.get("dash_filtro")
         if st.button("Limpiar selección de gráfica"):
@@ -1001,6 +949,61 @@ elif modulo == "Dashboard" and es_admin:
         st.dataframe(concentrado,hide_index=True,use_container_width=True)
         if not concentrado.empty:
             st.download_button("Descargar detalle Excel",excel_concentrado(concentrado),"Dashboard_Casanova.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.divider()
+        def estilo(fig, altura=330):
+            fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
+            return fig
+        def seleccion(fig, key, destino):
+            evento = st.plotly_chart(estilo(fig), theme=None, use_container_width=True, key=key, on_select="rerun", selection_mode="points")
+            puntos = evento.selection.points
+            if puntos and puntos != st.session_state.get(key + "_ultima"):
+                st.session_state[key + "_ultima"] = puntos
+                p = puntos[-1]
+                datos = p.get("customdata")
+                if datos:
+                    st.session_state["dash_filtro"] = (destino, tuple(datos))
+                    st.rerun()
+            return evento
+        a,b = st.columns(2)
+        with a:
+            st.markdown("**Situación documental**")
+            conteo = ult["Resultado"].value_counts().rename_axis("Resultado").reset_index(name="Unidades")
+            fig = px.pie(conteo, names="Resultado", values="Unidades", hole=.68, color="Resultado", color_discrete_map=colores)
+            fig.update_traces(textinfo="value+percent", textposition="outside", outsidetextfont=dict(color="#213769"), marker=dict(line=dict(color="#FFFFFF", width=2)))
+            fig.add_annotation(text=f"<b>{n:,}</b>", x=.5,y=.5,showarrow=False,font_size=30)
+            st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
+        with b:
+            st.markdown("**Avance acumulado de unidades**")
+            primera = df.dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
+            avance = primera.groupby(primera["Fecha de revisión"].dt.normalize()).size().cumsum().rename("Unidades").reset_index()
+            fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#004876"])
+            fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
+            st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
+        st.markdown("### Cumplimiento por documento")
+        st.caption("Selecciona un requisito y una respuesta en el detalle superior; también puedes seleccionar segmentos de las barras comparativas.")
+        for inicio in range(0,len(activos),3):
+            cols = st.columns(3)
+            for col,r in zip(cols,activos[inicio:inicio+3]):
+                with col:
+                    nombre = nombres[r["id"]]
+                    g = largo[largo["Requisito"] == nombre]["Respuesta"].value_counts()
+                    si=int(g.get("SÍ",0)); no=int(g.get("NO",0)); na=int(g.get("NO APLICA",0)); hist=n-si-no-na
+                    pct=f"{si/(n-na):.0%}" if n>na else "N/A"
+                    st.markdown(f"**{nombre}**")
+                    fig=go.Figure(go.Pie(labels=["SÍ","NO","NO APLICA","Histórico"],values=[si,no,na,hist],hole=.72,marker_colors=[colores["SÍ"],colores["NO"],colores["NO APLICA"],colores["SIN REVISAR"]],textinfo="none",sort=False))
+                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=27)
+                    fig.update_layout(showlegend=False)
+                    fig.update_traces(marker=dict(line=dict(color="#FFFFFF", width=2)))
+                    st.plotly_chart(estilo(fig,190),theme=None,use_container_width=True,key=f"doc_{r['id']}")
+                    st.caption(f"SÍ: {si:,}  |  NO: {no:,}  |  N/A: {na:,}" + (f"  |  Histórico: {hist:,}" if hist else ""))
+                    if st.button(f"Ver pendientes ({no})",key=f"pend_{r['id']}"):
+                        st.session_state["dash_filtro"]=("documento",(nombre,"NO"))
+                        st.rerun()
+        st.markdown("### Comparativo por sucursal")
+        resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
+        fig=px.bar(resumen,x="Sucursal",y="Unidades",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
+        fig.update_traces(textposition="outside", cliponaxis=False)
+        seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal")
     except Exception:
         st.error("No fue posible cargar el dashboard. Verifica la conexión y las versiones de Streamlit y Plotly.")
 
