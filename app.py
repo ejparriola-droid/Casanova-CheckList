@@ -102,6 +102,21 @@ except Exception:
 # FUNCIONES
 # =====================================
 
+def cliente_privado():
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_SERVICE_KEY"])
+
+
+def administrador_privado():
+    identidad = db.auth.get_user().user
+    if not identidad or identidad.id != st.session_state.get("usuario_id"):
+        raise PermissionError("Sesión inválida")
+    privado = cliente_privado()
+    filas = privado.table("perfiles").select("rol,activo").eq("id", identidad.id).execute().data
+    if not filas or not filas[0]["activo"] or filas[0]["rol"] != "administrador":
+        raise PermissionError("Acceso denegado")
+    return privado
+
+
 def normalizar_serie(valor):
     if pd.isna(valor):
         return ""
@@ -345,7 +360,7 @@ if "usuario_id" not in st.session_state:
 
     with st.form("login"):
 
-        correo = st.text_input("Correo electrónico")
+        correo = st.text_input("Usuario o correo electrónico")
 
         password = st.text_input(
             "Contraseña",
@@ -359,8 +374,15 @@ if "usuario_id" not in st.session_state:
     if entrar:
 
         try:
+            identificador = correo.strip().lower()
+            if "@" not in identificador:
+                privado = cliente_privado()
+                filas = privado.table("perfiles").select("id,activo").eq("usuario", identificador).execute().data
+                if not filas or not filas[0]["activo"]:
+                    raise ValueError("Acceso inválido")
+                identificador = privado.auth.admin.get_user_by_id(filas[0]["id"]).user.email
             resultado = db.auth.sign_in_with_password({
-                "email": correo.strip(),
+                "email": identificador,
                 "password": password
             })
 
@@ -371,7 +393,7 @@ if "usuario_id" not in st.session_state:
             st.rerun()
 
         except Exception:
-            st.error("Correo o contraseña incorrectos.")
+            st.error("Usuario o contraseña incorrectos.")
 
     st.stop()
 
@@ -453,7 +475,8 @@ st.sidebar.caption(
 
 opciones = [
     "Capturar checklist",
-    "Historial"
+    "Historial",
+    "Mi contraseña"
 ]
 
 if es_admin:
@@ -1185,24 +1208,85 @@ elif modulo == "Administración" and es_admin:
     ])
 
     with tab1:
-
         try:
-
+            privado = administrador_privado()
             usuarios = consultar_tabla("perfiles")
-
-            st.dataframe(
-                pd.DataFrame(usuarios),
-                hide_index=True,
-                use_container_width=True
-            )
-
-            st.caption(
-                "El alta de cuentas y contraseñas "
-                "se realiza por ahora en Supabase Auth."
-            )
-
+            asignaciones = privado.table("usuario_sucursales").select("*").execute().data
+            st.dataframe(pd.DataFrame([{
+                "Nombre": u["nombre"], "Usuario": u.get("usuario"), "Rol": u["rol"],
+                "Activo": u["activo"], "Sucursales": "Todas" if u["rol"] == "administrador" else ", ".join(mapa_sucursales.get(a["sucursal_id"], str(a["sucursal_id"])) for a in asignaciones if a["usuario_id"] == u["id"])
+            } for u in usuarios]), hide_index=True, use_container_width=True)
+            if st.session_state.pop("mensaje_usuario", False):
+                st.success("Cambios guardados.")
+            st.markdown("### Nuevo usuario")
+            with st.form("alta_usuario", clear_on_submit=True):
+                nombre = st.text_input("Nombre completo")
+                login = st.text_input("Nombre de usuario")
+                email = st.text_input("Correo electrónico real")
+                clave = st.text_input("Contraseña inicial (mínimo 12 caracteres)", type="password")
+                rol = st.selectbox("Rol", ["capturista", "administrador"])
+                sedes = st.multiselect("Sucursales (obligatorio para capturistas)", list(mapa_sucursales), format_func=mapa_sucursales.get)
+                alta = st.form_submit_button("Crear usuario")
+            if alta:
+                login = login.strip().lower()
+                if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or "@" not in email or len(clave) < 12 or (rol == "capturista" and not sedes):
+                    st.warning("Completa los datos, utiliza un usuario sin espacios y una contraseña de al menos 12 caracteres.")
+                elif any(u.get("usuario") == login for u in usuarios):
+                    st.warning("El usuario ya existe.")
+                else:
+                    privado = administrador_privado()
+                    nuevo = privado.auth.admin.create_user({"email": email.strip().lower(), "password": clave, "email_confirm": True}).user.id
+                    try:
+                        privado.table("perfiles").upsert({"id": nuevo, "nombre": nombre.strip(), "usuario": login, "rol": rol, "activo": False}).execute()
+                        if sedes and rol == "capturista":
+                            privado.table("usuario_sucursales").insert([{"usuario_id": nuevo, "sucursal_id": x} for x in sedes]).execute()
+                        privado.table("perfiles").update({"activo": True}).eq("id", nuevo).execute()
+                    except Exception:
+                        privado.table("perfiles").update({"activo": False}).eq("id", nuevo).execute()
+                        st.error("Alta incompleta. Revisa la cuenta en Supabase antes de reintentar.")
+                        st.stop()
+                    st.session_state.mensaje_usuario = True
+                    st.rerun()
+            if usuarios:
+                st.markdown("### Editar usuario")
+                mapa = {u["id"]: u for u in usuarios}
+                elegido = st.selectbox("Seleccionar cuenta", list(mapa), format_func=lambda x: f'{mapa[x]["nombre"]} | {mapa[x].get("usuario")}')
+                u = mapa[elegido]
+                correo_actual = privado.auth.admin.get_user_by_id(elegido).user.email
+                actuales = [a["sucursal_id"] for a in asignaciones if a["usuario_id"] == elegido and a["sucursal_id"] in mapa_sucursales]
+                with st.form(f"editar_usuario_{elegido}"):
+                    nombre = st.text_input("Nombre", value=u["nombre"])
+                    login = st.text_input("Usuario", value=u.get("usuario") or "")
+                    email = st.text_input("Correo", value=correo_actual or "")
+                    rol = st.selectbox("Rol", ["capturista", "administrador"], index=int(u["rol"] == "administrador"))
+                    activo = st.checkbox("Cuenta activa", value=u["activo"])
+                    sedes = st.multiselect("Sucursales", list(mapa_sucursales), default=actuales, format_func=mapa_sucursales.get)
+                    clave = st.text_input("Nueva contraseña (dejar vacío para conservar)", type="password")
+                    guardar = st.form_submit_button("Guardar usuario")
+                if guardar:
+                    login = login.strip().lower()
+                    if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or "@" not in email or (clave and len(clave)<12) or (rol == "capturista" and not sedes):
+                        st.warning("Revisa los datos y la longitud de la contraseña (12 caracteres).")
+                    elif elegido == usuario_id and (not activo or rol != "administrador"):
+                        st.warning("No puedes desactivar ni quitar tu propio rol de administrador.")
+                    elif any(x["id"] != elegido and x.get("usuario") == login for x in usuarios):
+                        st.warning("El nombre de usuario ya existe.")
+                    else:
+                        privado = administrador_privado()
+                        cambios = {}
+                        if email.strip().lower() != correo_actual: cambios.update(email=email.strip().lower(), email_confirm=True)
+                        if clave: cambios["password"] = clave
+                        if cambios: privado.auth.admin.update_user_by_id(elegido, cambios)
+                        if elegido != usuario_id:
+                            privado.table("perfiles").update({"activo": False}).eq("id", elegido).execute()
+                        privado.table("usuario_sucursales").delete().eq("usuario_id", elegido).execute()
+                        if rol == "capturista" and sedes:
+                            privado.table("usuario_sucursales").insert([{"usuario_id": elegido, "sucursal_id": x} for x in sedes]).execute()
+                        privado.table("perfiles").update({"nombre": nombre.strip(), "usuario": login, "rol": rol, "activo": activo}).eq("id", elegido).execute()
+                        st.session_state.mensaje_usuario = True
+                        st.rerun()
         except Exception:
-            st.error("No fue posible consultar usuarios.")
+            st.error("No se completó la operación de usuarios. Verifica Secrets y los datos; si estabas guardando, revisa el estado de la cuenta antes de reintentar.")
 
     with tab2:
 
@@ -1332,3 +1416,23 @@ elif modulo == "Administración" and es_admin:
             st.error(
                 "No fue posible administrar los requisitos."
             )
+
+
+elif modulo == "Mi contraseña":
+    st.subheader("Cambiar mi contraseña")
+    with st.form("cambiar_clave"):
+        anterior = st.text_input("Contraseña actual", type="password")
+        nueva = st.text_input("Nueva contraseña (mínimo 12 caracteres)", type="password")
+        confirmar = st.text_input("Confirmar nueva contraseña", type="password")
+        cambiar = st.form_submit_button("Cambiar contraseña")
+    if cambiar:
+        if len(nueva) < 12 or nueva != confirmar:
+            st.warning("La contraseña debe tener al menos 12 caracteres y coincidir con la confirmación.")
+        else:
+            try:
+                correo = db.auth.get_user().user.email
+                db.auth.sign_in_with_password({"email": correo, "password": anterior})
+                db.auth.update_user({"password": nueva})
+                st.success("Contraseña actualizada.")
+            except Exception:
+                st.error("No se pudo cambiar la contraseña. Verifica la contraseña actual.")
