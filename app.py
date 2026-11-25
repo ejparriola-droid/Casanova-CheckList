@@ -918,25 +918,33 @@ elif modulo == "Dashboard" and es_admin:
         c.metric("Unidades completas", f"{completos:,}")
         d.metric("Con pendientes (NO)", f"{pendientes:,}")
         st.caption("Última revisión por serie dentro de los filtros. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
+        def aplicar_seleccion(tipo=None, valores=()):
+            st.session_state["dash_doc"] = "Todos"
+            st.session_state["dash_resp"] = "Todas"
+            st.session_state["dash_resultado"] = "Todas"
+            if tipo:
+                st.session_state["dash_filtro"] = (tipo, tuple(valores))
+            else:
+                st.session_state.pop("dash_filtro", None)
+            st.session_state["dash_reset"] = st.session_state.get("dash_reset", 0) + 1
         st.markdown("### Detalle de unidades")
+        st.button("Limpiar selección de gráfica", on_click=aplicar_seleccion)
         filtro=st.session_state.get("dash_filtro")
-        if st.button("Limpiar selección de gráfica"):
-            st.session_state.pop("dash_filtro",None)
-            st.session_state["dash_reset"]=st.session_state.get("dash_reset",0)+1
-            filtro=None
         detalle=ult.copy()
         if filtro:
             tipo, valores=filtro
             if tipo=="documento":
                 ids=largo.loc[(largo["Requisito"]==valores[0]) & (largo["Respuesta"]==valores[1]),"id"]
                 detalle=detalle[detalle["id"].isin(ids)]
+            elif tipo=="general":
+                detalle=detalle[detalle["Resultado"]==valores[0]]
             else:
                 detalle=detalle[(detalle["Sucursal"]==valores[0]) & (detalle["Resultado"]==valores[1])]
             st.caption("Selección: " + " · ".join(valores))
         a,b,c=st.columns(3)
-        doc=a.selectbox("Documento",["Todos"]+list(nombres.values()))
-        resp=b.selectbox("Respuesta",["Todas","SÍ","NO","NO APLICA","SIN REVISAR","SIN REGISTRO"])
-        resultado=c.selectbox("Situación general",["Todas","Completo","Con pendientes","Histórico incompleto","No aplica"])
+        doc=a.selectbox("Documento",["Todos"]+list(nombres.values()),key="dash_doc")
+        resp=b.selectbox("Respuesta",["Todas","SÍ","NO","NO APLICA","SIN REVISAR","SIN REGISTRO"],key="dash_resp")
+        resultado=c.selectbox("Situación general",["Todas","Completo","Con pendientes","Histórico incompleto","No aplica"],key="dash_resultado")
         if doc!="Todos" or resp!="Todas":
             g=largo
             if doc!="Todos": g=g[g["Requisito"]==doc]
@@ -954,16 +962,15 @@ elif modulo == "Dashboard" and es_admin:
             fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
             return fig
         def seleccion(fig, key, destino):
-            evento = st.plotly_chart(estilo(fig), theme=None, use_container_width=True, key=key, on_select="rerun", selection_mode="points")
-            puntos = evento.selection.points
-            if puntos and puntos != st.session_state.get(key + "_ultima"):
-                st.session_state[key + "_ultima"] = puntos
-                p = puntos[-1]
-                datos = p.get("customdata")
-                if datos:
-                    st.session_state["dash_filtro"] = (destino, tuple(datos))
-                    st.rerun()
-            return evento
+            def al_seleccionar():
+                evento = st.session_state.get(key, {})
+                puntos = evento.get("selection", {}).get("points", [])
+                if puntos:
+                    datos = puntos[-1].get("customdata")
+                    if datos is not None and len(datos):
+                        aplicar_seleccion(destino, datos)
+            return st.plotly_chart(estilo(fig), theme=None, use_container_width=True,
+                                   key=key, on_select=al_seleccionar, selection_mode="points")
         a,b = st.columns(2)
         with a:
             st.markdown("**Situación documental**")
@@ -972,6 +979,9 @@ elif modulo == "Dashboard" and es_admin:
             fig.update_traces(textinfo="value+percent", textposition="outside", outsidetextfont=dict(color="#213769"), marker=dict(line=dict(color="#FFFFFF", width=2)))
             fig.add_annotation(text=f"<b>{n:,}</b>", x=.5,y=.5,showarrow=False,font_size=30)
             st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
+            for estado, cantidad in zip(conteo["Resultado"], conteo["Unidades"]):
+                st.button(f"{estado}: {cantidad}", key=f"general_{estado}",
+                          on_click=aplicar_seleccion, args=("general", (estado,)))
         with b:
             st.markdown("**Avance acumulado de unidades**")
             primera = df.dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
@@ -980,7 +990,7 @@ elif modulo == "Dashboard" and es_admin:
             fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
             st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
         st.markdown("### Cumplimiento por documento")
-        st.caption("Selecciona un requisito y una respuesta en el detalle superior; también puedes seleccionar segmentos de las barras comparativas.")
+        st.caption("Pulsa los botones debajo de cada dona o selecciona una barra para actualizar el detalle superior.")
         for inicio in range(0,len(activos),3):
             cols = st.columns(3)
             for col,r in zip(cols,activos[inicio:inicio+3]):
@@ -996,14 +1006,20 @@ elif modulo == "Dashboard" and es_admin:
                     fig.update_traces(marker=dict(line=dict(color="#FFFFFF", width=2)))
                     st.plotly_chart(estilo(fig,190),theme=None,use_container_width=True,key=f"doc_{r['id']}")
                     st.caption(f"SÍ: {si:,}  |  NO: {no:,}  |  N/A: {na:,}" + (f"  |  Histórico: {hist:,}" if hist else ""))
-                    if st.button(f"Ver pendientes ({no})",key=f"pend_{r['id']}"):
-                        st.session_state["dash_filtro"]=("documento",(nombre,"NO"))
-                        st.rerun()
+                    botones = st.columns(3)
+                    for boton, estado, cantidad in zip(botones, ["SÍ", "NO", "NO APLICA"], [si,no,na]):
+                        boton.button(f"{estado}: {cantidad}", key=f"doc_sel_{r['id']}_{estado}",
+                                     on_click=aplicar_seleccion, args=("documento", (nombre,estado)))
         st.markdown("### Comparativo por sucursal")
         resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
         fig=px.bar(resumen,x="Sucursal",y="Unidades",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
         fig.update_traces(textposition="outside", cliponaxis=False)
         seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal")
+        with st.expander("Consultar detalle por sucursal"):
+            for fila in resumen.itertuples(index=False):
+                st.button(f"{fila.Sucursal} · {fila.Resultado}: {fila.Unidades}",
+                          key=f"suc_det_{fila.Sucursal}_{fila.Resultado}",
+                          on_click=aplicar_seleccion, args=("sucursal", (fila.Sucursal, fila.Resultado)))
     except Exception:
         st.error("No fue posible cargar el dashboard. Verifica la conexión y las versiones de Streamlit y Plotly.")
 
