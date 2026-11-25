@@ -1250,14 +1250,14 @@ elif modulo == "Administración" and es_admin:
                 with st.form("alta_usuario", clear_on_submit=False):
                     nombre = st.text_input("Nombre completo")
                     login = st.text_input("Nombre de usuario")
-                    clave = st.text_input("Contraseña inicial (mínimo 12 caracteres)", type="password")
+                    clave = st.text_input("Contraseña inicial (mínimo 8 caracteres)", type="password")
                     rol = st.selectbox("Rol", ROLES, format_func=ETIQUETAS.get)
                     sedes = st.multiselect("Sucursales (obligatorio para capturistas)", list(mapa_sucursales), format_func=mapa_sucursales.get)
                     alta = st.form_submit_button("Crear usuario")
                 if alta:
                     login = login.strip().lower()
-                    if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or len(clave) < 12 or (rol == "capturista" and not sedes):
-                        st.warning("Completa los datos, utiliza un usuario sin espacios y una contraseña de al menos 12 caracteres.")
+                    if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or len(clave) < 8 or (rol == "capturista" and not sedes):
+                        st.warning("Completa los datos, utiliza un usuario sin espacios y una contraseña de al menos 8 caracteres.")
                     elif any(u.get("usuario") == login for u in usuarios):
                         st.warning("El usuario ya existe.")
                     else:
@@ -1290,8 +1290,8 @@ elif modulo == "Administración" and es_admin:
                         guardar = st.form_submit_button("Guardar usuario")
                     if guardar:
                         login = login.strip().lower()
-                        if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or (clave and len(clave)<12) or (rol == "capturista" and not sedes):
-                            st.warning("Revisa los datos y la longitud de la contraseña (12 caracteres).")
+                        if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or (clave and len(clave)<8) or (rol == "capturista" and not sedes):
+                            st.warning("Revisa los datos y la longitud de la contraseña (8 caracteres).")
                         elif elegido == usuario_id and (not activo or rol != "maestro"):
                             st.warning("No puedes desactivar ni quitar tu propio rol de administrador.")
                         elif any(x["id"] != elegido and x.get("usuario") == login for x in usuarios):
@@ -1449,12 +1449,12 @@ elif modulo == "Mi contraseña":
     st.subheader("Cambiar mi contraseña")
     with st.form("cambiar_clave"):
         anterior = st.text_input("Contraseña actual", type="password")
-        nueva = st.text_input("Nueva contraseña (mínimo 12 caracteres)", type="password")
+        nueva = st.text_input("Nueva contraseña (mínimo 8 caracteres)", type="password")
         confirmar = st.text_input("Confirmar nueva contraseña", type="password")
         cambiar = st.form_submit_button("Cambiar contraseña")
     if cambiar:
-        if len(nueva) < 12 or nueva != confirmar:
-            st.warning("La contraseña debe tener al menos 12 caracteres y coincidir con la confirmación.")
+        if len(nueva) < 8 or nueva != confirmar:
+            st.warning("La contraseña debe tener al menos 8 caracteres y coincidir con la confirmación.")
         else:
             try:
                 correo = db.auth.get_user().user.email
