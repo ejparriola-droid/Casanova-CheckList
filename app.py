@@ -51,28 +51,33 @@ ESTADOS_PERMITIDOS = [
 st.markdown("""
 <style>
 .stApp {
-    background-color: #F4F7FB;
-    color: #17365D;
+    font-family: "Montserrat", "Century Gothic", Arial, sans-serif;
+    background-color: #EEF2F8;
+    color: #213769;
 }
 h1, h2, h3, h4, label {
-    color: #17365D !important;
+    font-family: "Montserrat", "Century Gothic", Arial, sans-serif;
+    color: #213769 !important;
 }
 div[data-testid="stMetric"] {
     background: white;
-    border: 1px solid #C7D2E0;
+    border: 1px solid #D2DCEB;
     padding: 15px;
     border-radius: 10px;
 }
 div[data-testid="stMetricValue"] {
-    color: #17365D;
+    font-weight: 700;
+    color: #213769;
 }
 div.stButton > button,
 div.stDownloadButton > button,
 button[kind="primary"] {
-    background-color: #174A7E !important;
+    background-color: #004876 !important;
     color: white !important;
     border-radius: 8px;
 }
+[data-testid="stSidebar"] { background-color: #EEF2F8; }
+[data-testid="stMetric"] { border-top: 4px solid #FFB700 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -272,7 +277,7 @@ def excel_concentrado(df):
         ws.row_dimensions[1].height = 32
         for j, col in enumerate(df.columns, 1):
             celda = ws.cell(1, j)
-            celda.fill = PatternFill("solid", fgColor="174A7E")
+            celda.fill = PatternFill("solid", fgColor="213769")
             celda.font = Font(bold=True, color="FFFFFF")
             celda.alignment = Alignment(wrap_text=True, vertical="center")
             ancho = max([len(str(col))] + [len(str(v)) for v in df[col].dropna().head(1000)])
@@ -283,7 +288,7 @@ def excel_concentrado(df):
                     c.number_format = "dd/mm/yyyy hh:mm" if col == "Fecha de revisión" else "dd/mm/yyyy"
                 elif isinstance(c.value, str):
                     c.data_type = "s"
-                    colores = {"SÍ": ("E2F0D9", "216E39"), "NO": ("FCE4D6", "A4262C"), "SIN REVISAR": ("FFF2CC", "805B10"), "NO APLICA": ("E2E8F0", "475569"), "SIN REGISTRO": ("FFF2CC", "805B10")}
+                    colores = {"SÍ": ("EEF2F8", "004876"), "NO": ("FFB700", "213769"), "SIN REVISAR": ("EEF2F8", "213769"), "NO APLICA": ("EEF2F8", "213769"), "SIN REGISTRO": ("EEF2F8", "213769")}
                     if c.value in colores:
                         fondo, letra = colores[c.value]
                         c.fill = PatternFill("solid", fgColor=fondo)
@@ -867,10 +872,10 @@ elif modulo == "Historial":
 
 elif modulo == "Dashboard" and es_admin:
     st.subheader("Resumen ejecutivo | Control documental")
-    colores = {"SÍ": "#218838", "NO": "#C53B3B", "NO APLICA": "#94A3B8",
-               "SIN REVISAR": "#D9A521", "SIN REGISTRO": "#D9A521",
-               "Completo": "#218838", "Con pendientes": "#C53B3B",
-               "Histórico incompleto": "#D9A521", "No aplica": "#94A3B8"}
+    colores = {"SÍ": "#004876", "NO": "#FFB700", "NO APLICA": "#D2DCEB",
+               "SIN REVISAR": "#8493AD", "SIN REGISTRO": "#8493AD",
+               "Completo": "#004876", "Con pendientes": "#FFB700",
+               "Histórico incompleto": "#8493AD", "No aplica": "#D2DCEB"}
     try:
         df = pd.DataFrame(consultar_tabla("checklist_revisiones"))
         respuestas = consultar_tabla("checklist_respuestas")
@@ -914,10 +919,10 @@ elif modulo == "Dashboard" and es_admin:
         d.metric("Con pendientes (NO)", f"{pendientes:,}")
         st.caption("Última revisión por serie dentro de los filtros. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
         def estilo(fig, altura=330):
-            fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#17365D"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
+            fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
             return fig
         def seleccion(fig, key, destino):
-            evento = st.plotly_chart(estilo(fig), use_container_width=True, key=key, on_select="rerun", selection_mode="points")
+            evento = st.plotly_chart(estilo(fig), theme=None, use_container_width=True, key=key, on_select="rerun", selection_mode="points")
             puntos = evento.selection.points
             if puntos and puntos != st.session_state.get(key + "_ultima"):
                 st.session_state[key + "_ultima"] = puntos
@@ -931,16 +936,16 @@ elif modulo == "Dashboard" and es_admin:
             st.markdown("**Situación documental**")
             conteo = ult["Resultado"].value_counts().rename_axis("Resultado").reset_index(name="Unidades")
             fig = px.pie(conteo, names="Resultado", values="Unidades", hole=.68, color="Resultado", color_discrete_map=colores)
-            fig.update_traces(textinfo="value+percent")
+            fig.update_traces(textinfo="value+percent", textposition="outside", outsidetextfont=dict(color="#213769"), marker=dict(line=dict(color="#FFFFFF", width=2)))
             fig.add_annotation(text=f"<b>{n:,}</b>", x=.5,y=.5,showarrow=False,font_size=30)
-            st.plotly_chart(estilo(fig), use_container_width=True)
+            st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
         with b:
             st.markdown("**Avance acumulado de unidades**")
             primera = df.dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
             avance = primera.groupby(primera["Fecha de revisión"].dt.normalize()).size().cumsum().rename("Unidades").reset_index()
-            fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#174A7E"])
+            fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#004876"])
             fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
-            st.plotly_chart(estilo(fig), use_container_width=True)
+            st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
         st.markdown("### Cumplimiento por documento")
         st.caption("Selecciona un requisito y una respuesta en el detalle inferior; también puedes seleccionar segmentos de las barras comparativas.")
         for inicio in range(0,len(activos),3):
@@ -955,19 +960,16 @@ elif modulo == "Dashboard" and es_admin:
                     fig=go.Figure(go.Pie(labels=["SÍ","NO","NO APLICA","Histórico"],values=[si,no,na,hist],hole=.72,marker_colors=[colores["SÍ"],colores["NO"],colores["NO APLICA"],colores["SIN REVISAR"]],textinfo="none",sort=False))
                     fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=27)
                     fig.update_layout(showlegend=False)
-                    st.plotly_chart(estilo(fig,190),use_container_width=True,key=f"doc_{r['id']}")
+                    fig.update_traces(marker=dict(line=dict(color="#FFFFFF", width=2)))
+                    st.plotly_chart(estilo(fig,190),theme=None,use_container_width=True,key=f"doc_{r['id']}")
                     st.caption(f"SÍ: {si:,}  |  NO: {no:,}  |  N/A: {na:,}" + (f"  |  Histórico: {hist:,}" if hist else ""))
                     if st.button(f"Ver pendientes ({no})",key=f"pend_{r['id']}"):
                         st.session_state["dash_filtro"]=("documento",(nombre,"NO"))
         st.markdown("### Comparativo por sucursal")
         resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
         fig=px.bar(resumen,x="Sucursal",y="Unidades",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
+        fig.update_traces(textposition="outside", cliponaxis=False)
         seleccion(fig,"dash_barras","sucursal")
-        st.markdown("### Mapa de calor documental")
-        calor=largo.assign(si=largo["Respuesta"].eq("SÍ").astype(int),aplica=largo["Respuesta"].ne("NO APLICA").astype(int)).groupby(["Sucursal","Requisito"])[["si","aplica"]].sum()
-        matriz=(100*calor["si"]/calor["aplica"].replace(0,float("nan"))).unstack().reindex(columns=list(nombres.values()))
-        fig=go.Figure(go.Heatmap(z=matriz.values,x=matriz.columns,y=matriz.index,zmin=0,zmax=100,colorscale=[[0,"#C53B3B"],[.8,"#F2D17B"],[1,"#218838"]],text=[[f"{v:.0f}%" if pd.notna(v) else "N/A" for v in fila] for fila in matriz.values],texttemplate="%{text}",hovertemplate="%{y}<br>%{x}: %{text}<extra></extra>"))
-        st.plotly_chart(estilo(fig,380),use_container_width=True)
         st.markdown("### Detalle de unidades")
         filtro=st.session_state.get("dash_filtro")
         if st.button("Limpiar selección de gráfica"):
