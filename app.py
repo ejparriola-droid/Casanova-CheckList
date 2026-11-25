@@ -1,9 +1,13 @@
+
 import streamlit as st
 import pandas as pd
 import requests
 import re
+import unicodedata
+
 from io import BytesIO
 from datetime import date, datetime
+from supabase import create_client
 
 # =====================================
 # CONFIGURACIÓN
@@ -29,38 +33,10 @@ COLUMNAS = [
     "Almacen"
 ]
 
-# Requisitos y fechas que se solicitan cuando corresponda.
-# La fecha se captura como dato de apoyo; no sustituye la validación documental.
-CHECKLIST = {
-    "Documentación de circulación": [
-        {"nombre": "Tarjeta de circulación vigente", "fecha": "Fecha de vigencia"},
-        {"nombre": "Placa delantera"},
-        {"nombre": "Placa trasera"},
-        {"nombre": "Calcomanía o engomado de circulación"},
-        {"nombre": "Permiso provisional para circular (si aplica)", "fecha": "Fecha de vencimiento del permiso"},
-    ],
-    "Pagos vehiculares": [
-        {"nombre": "Tenencia pagada (si aplica)", "fecha": "Fecha de pago de tenencia"},
-        {"nombre": "Refrendo vehicular pagado", "fecha": "Fecha de pago de refrendo"},
-        {"nombre": "Adeudos de tenencia anteriores"},
-        {"nombre": "Multas de tránsito pendientes"},
-        {"nombre": "Infracciones vehiculares pendientes"},
-    ],
-    "Verificación vehicular": [
-        {"nombre": "Verificación vehicular vigente", "fecha": "Fecha de vigencia de verificación"},
-        {"nombre": "Holograma de verificación"},
-        {"nombre": "Constancia de verificación", "fecha": "Fecha de emisión de constancia"},
-        {"nombre": "Sin adeudos o restricciones que impidan verificar"},
-    ],
-    "Seguro vehicular": [
-        {"nombre": "Seguro de responsabilidad civil vigente"},
-        {"nombre": "Póliza de seguro vigente", "fecha": "Fecha de vigencia de póliza"},
-        {"nombre": "Comprobante de pago del seguro", "fecha": "Fecha de pago del seguro"},
-        {"nombre": "Fecha de vencimiento del seguro", "fecha": "Fecha de vencimiento del seguro"},
-    ],
-}
-
-TOTAL_REQUISITOS = sum(len(items) for items in CHECKLIST.values())
+ESTADOS_EXCLUIDOS = [
+    "Orden de Servicio Cerrada por el gestor",
+    "Orden de Servicio Cancelada"
+]
 
 # =====================================
 # ESTILOS
@@ -68,104 +44,115 @@ TOTAL_REQUISITOS = sum(len(items) for items in CHECKLIST.values())
 
 st.markdown("""
 <style>
-/* Paleta clara y de alto contraste */
 .stApp {
-    background-color: #F4F7FB !important;
-    color: #172B4D !important;
+    background-color: #F4F7FB;
+    color: #17365D;
 }
-
-/* Encabezados y texto */
-h1, h2, h3, h4,
-[data-testid="stMarkdownContainer"],
-[data-testid="stMarkdownContainer"] p,
-[data-testid="stWidgetLabel"],
-.stRadio label,
-.stRadio label p,
-label {
+h1, h2, h3, h4, label {
     color: #17365D !important;
 }
-
-/* Texto secundario y ayudas: gris oscuro legible */
-small, [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p,
-.stTextInput p, .stDateInput p {
-    color: #52657D !important;
-}
-
-/* Entradas: fondo blanco y texto oscuro (evita campos negros) */
-input,
-textarea,
-[data-baseweb="input"] input,
-[data-baseweb="textarea"] textarea,
-[data-baseweb="select"] > div,
-[data-testid="stDateInput"] input,
-[data-testid="stTextInput"] input {
-    background-color: #FFFFFF !important;
-    color: #172B4D !important;
-    -webkit-text-fill-color: #172B4D !important;
-    border: 1px solid #AAB8C8 !important;
-}
-
-/* Texto de ejemplo dentro de los campos */
-input::placeholder,
-textarea::placeholder {
-    color: #718096 !important;
-    opacity: 1 !important;
-}
-
-/* Icono del calendario y controles */
-[data-testid="stDateInput"] button,
-[data-baseweb="input"] button {
-    color: #17365D !important;
-}
-
-/* Botones principales y de descarga */
-div.stButton > button,
-div.stDownloadButton > button,
-button[kind="primary"],
-button[kind="secondaryFormSubmit"] {
-    background-color: #174A7E !important;
-    color: #FFFFFF !important;
-    border: 1px solid #123B65 !important;
-    border-radius: 8px;
-    font-weight: bold;
-}
-div.stButton > button:hover,
-div.stDownloadButton > button:hover {
-    background-color: #0F355B !important;
-    color: #FFFFFF !important;
-}
-
-/* Tarjetas de indicadores */
 div[data-testid="stMetric"] {
-    background: #FFFFFF !important;
-    border: 1px solid #C7D2E0 !important;
-    color: #172B4D !important;
-    padding: 12px;
+    background: white;
+    border: 1px solid #C7D2E0;
+    padding: 15px;
     border-radius: 10px;
 }
-div[data-testid="stMetric"] label,
-div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-    color: #17365D !important;
+div[data-testid="stMetricValue"] {
+    color: #17365D;
 }
-
-/* Separadores y avisos */
-hr {
-    border-color: #C7D2E0 !important;
-}
-div[data-testid="stAlert"] {
-    border: 1px solid #B8C7D9 !important;
+div.stButton > button,
+div.stDownloadButton > button,
+button[kind="primary"] {
+    background-color: #174A7E !important;
+    color: white !important;
+    border-radius: 8px;
 }
 </style>
 """, unsafe_allow_html=True)
 
 # =====================================
+# SUPABASE
+# =====================================
+
+try:
+    if "supabase" not in st.session_state:
+        st.session_state.supabase = create_client(
+            st.secrets["SUPABASE_URL"],
+            st.secrets["SUPABASE_KEY"]
+        )
+
+    db = st.session_state.supabase
+
+except Exception:
+    st.error("No fue posible configurar Supabase. Revisa Secrets.")
+    st.stop()
+
+# =====================================
 # FUNCIONES
 # =====================================
 
+def normalizar_serie(valor):
+    if pd.isna(valor):
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", str(valor).upper())
+
+
+def normalizar_texto(valor):
+    texto = str(valor).strip().lower()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(
+        c for c in texto
+        if not unicodedata.combining(c)
+    )
+    return " ".join(texto.split())
+
+
+def mostrar(valor):
+    if pd.isna(valor):
+        return "Sin información"
+
+    if isinstance(valor, (date, datetime)):
+        return valor.strftime("%d/%m/%Y")
+
+    texto = str(valor).strip()
+
+    if texto.lower() in ("", "nan", "none"):
+        return "Sin información"
+
+    return texto
+
+
+def consultar_tabla(tabla):
+    registros = []
+    inicio = 0
+    limite = 500
+
+    while True:
+        respuesta = (
+            db.table(tabla)
+            .select("*")
+            .order("id")
+            .range(inicio, inicio + limite - 1)
+            .execute()
+        )
+
+        bloque = respuesta.data or []
+        registros.extend(bloque)
+
+        if len(bloque) < limite:
+            break
+
+        inicio += limite
+
+    return registros
+
+
 @st.cache_data(ttl=300)
 def cargar_base():
+
     respuesta = requests.get(API_URL, timeout=90)
     respuesta.raise_for_status()
+
     archivo = BytesIO(respuesta.content)
 
     try:
@@ -175,345 +162,971 @@ def cargar_base():
         df = pd.read_csv(archivo)
 
     df.columns = df.columns.astype(str).str.strip()
-    faltantes = [col for col in COLUMNAS if col not in df.columns]
+
+    faltantes = [
+        c for c in COLUMNAS
+        if c not in df.columns
+    ]
 
     if faltantes:
         raise ValueError(
-            "No se encontraron estas columnas: " + ", ".join(faltantes)
+            "Columnas faltantes: " + ", ".join(faltantes)
         )
 
     df = df[COLUMNAS].copy()
-    df["Serie"] = df["Serie"].astype(str).str.strip()
+
+    df["Serie"] = df["Serie"].apply(normalizar_serie)
+
     df["Nombre Cliente"] = (
-        df["Nombre Cliente"].fillna("").astype(str).str.strip()
+        df["Nombre Cliente"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
     )
+
     df.loc[
-        df["Nombre Cliente"].str.upper().isin(
-            ["", "SIN INFORMACION", "SIN INFORMACIÓN", "NAN", "NONE"]
-        ),
+        df["Nombre Cliente"].str.upper().isin([
+            "",
+            "SIN INFORMACION",
+            "SIN INFORMACIÓN",
+            "NAN",
+            "NONE"
+        ]),
         "Nombre Cliente"
     ] = "SIN CONTRATO"
 
     return df
 
 
-def normalizar_serie(valor):
-    if pd.isna(valor):
-        return ""
-    return re.sub(r"[^A-Z0-9]", "", str(valor).upper())
+def descargar_excel(tablas, nombre):
 
+    salida = BytesIO()
 
-def valor_mostrar(valor):
-    if pd.isna(valor) or str(valor).strip().lower() in ("", "nan", "none"):
-        return "Sin información"
-    if isinstance(valor, (datetime, date)):
-        return valor.strftime("%d/%m/%Y")
-    return str(valor)
+    with pd.ExcelWriter(
+        salida,
+        engine="openpyxl"
+    ) as writer:
 
+        for hoja, datos in tablas.items():
+            datos.to_excel(
+                writer,
+                sheet_name=hoja,
+                index=False
+            )
 
-def inicializar_estado():
-    if "checklists_guardados" not in st.session_state:
-        st.session_state.checklists_guardados = []
+    st.download_button(
+        "📥 Descargar Excel",
+        data=salida.getvalue(),
+        file_name=nombre,
+        mime=(
+            "application/vnd.openxmlformats-"
+            "officedocument.spreadsheetml.sheet"
+        )
+    )
 
-
-def crear_clave(categoria, indice):
-    return f"respuesta_{categoria}_{indice}"
-
-
-def construir_registro(unidad, respuestas):
-    return {
-        "fecha_revision": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "serie": str(unidad["Serie"]),
-        "placa": valor_mostrar(unidad["Placa"]),
-        "linea": valor_mostrar(unidad["Linea"]),
-        "modelo": valor_mostrar(unidad["Modelo"]),
-        "unidad_negocio": valor_mostrar(unidad["Unidad de Negocio"]),
-        "cliente": valor_mostrar(unidad["Nombre Cliente"]),
-        "almacen": valor_mostrar(unidad["Almacen"]),
-        "respuestas": respuestas,
-    }
-
-
-inicializar_estado()
 
 # =====================================
 # ENCABEZADO
 # =====================================
 
 st.title("🚗 CASANOVA CHECKLIST")
-st.caption("CORPORATIVO | CONTROL DE TRÁMITES VEHICULARES")
+
+st.caption(
+    "CORPORATIVO | CONTROL DE TRÁMITES VEHICULARES"
+)
+
 st.divider()
 
 # =====================================
-# CONEXIÓN CON BASE MAESTRA
+# INICIO DE SESIÓN
 # =====================================
 
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.subheader("Consulta de unidades")
-with col2:
-    if st.button("🔄 Actualizar base"):
-        cargar_base.clear()
-        st.rerun()
+if "usuario_id" not in st.session_state:
 
-try:
-    df = cargar_base()
-    st.success(
-        f"Base conectada correctamente | {len(df):,} vehículos disponibles"
-    )
-except Exception as e:
-    st.error(f"No fue posible consultar la base: {e}")
+    st.subheader("🔐 Iniciar sesión")
+
+    with st.form("login"):
+
+        correo = st.text_input("Correo electrónico")
+
+        password = st.text_input(
+            "Contraseña",
+            type="password"
+        )
+
+        entrar = st.form_submit_button(
+            "Iniciar sesión"
+        )
+
+    if entrar:
+
+        try:
+            resultado = db.auth.sign_in_with_password({
+                "email": correo.strip(),
+                "password": password
+            })
+
+            st.session_state.usuario_id = (
+                resultado.user.id
+            )
+
+            st.rerun()
+
+        except Exception:
+            st.error("Correo o contraseña incorrectos.")
+
     st.stop()
 
 # =====================================
-# BÚSQUEDA
+# PERFIL Y PERMISOS
 # =====================================
 
-st.markdown("### 🔎 Buscar vehículo")
+try:
 
-serie_busqueda = st.text_input(
-    "Ingresa los últimos 9 caracteres de la serie",
-    max_chars=9,
-    placeholder="Ejemplo: KK1234567"
-)
+    perfiles = (
+        db.table("perfiles")
+        .select("*")
+        .eq("id", st.session_state.usuario_id)
+        .execute()
+        .data
+    )
 
-if serie_busqueda:
-    serie_normalizada = normalizar_serie(serie_busqueda)
+    if not perfiles or not perfiles[0]["activo"]:
+        st.error("Tu usuario no tiene acceso activo.")
 
-    if len(serie_normalizada) != 9:
-        st.warning("Debes ingresar exactamente 9 caracteres.")
+        if st.button("Volver al inicio"):
+            st.session_state.clear()
+            st.rerun()
+
         st.stop()
 
-    df["_serie_busqueda"] = df["Serie"].apply(normalizar_serie)
-    resultados = df[
-        df["_serie_busqueda"].str.endswith(serie_normalizada, na=False)
-    ].copy()
+    perfil = perfiles[0]
 
-    if resultados.empty:
-        st.error("No encontramos ninguna unidad con esa serie.")
-    else:
-        st.success(f"Encontramos {len(resultados)} coincidencia(s).")
+except Exception:
+    st.error("No fue posible consultar tu perfil.")
 
-        if len(resultados) > 1:
-            opciones = resultados.index.tolist()
-            seleccion = st.selectbox(
-                "Encontramos varias unidades. Selecciona la correcta:",
-                opciones,
-                format_func=lambda i: (
-                    f"{resultados.loc[i, 'Serie']} | "
-                    f"{resultados.loc[i, 'Linea']} | "
-                    f"{resultados.loc[i, 'Placa']}"
-                )
+    if st.button("Iniciar sesión nuevamente"):
+        st.session_state.clear()
+        st.rerun()
+
+    st.stop()
+
+es_admin = (
+    str(perfil["rol"]).lower() == "administrador"
+)
+
+usuario_id = perfil["id"]
+nombre_usuario = perfil["nombre"]
+
+# =====================================
+# SUCURSALES
+# =====================================
+
+try:
+
+    sucursales = (
+        db.table("sucursales")
+        .select("*")
+        .eq("activa", True)
+        .execute()
+        .data
+    )
+
+except Exception:
+    st.error("No fue posible consultar las sucursales.")
+    st.stop()
+
+mapa_sucursales = {
+    s["id"]: s["nombre"]
+    for s in sucursales
+}
+
+# =====================================
+# MENÚ
+# =====================================
+
+st.sidebar.title("CASANOVA")
+
+st.sidebar.write(f"👤 {nombre_usuario}")
+
+st.sidebar.caption(
+    "Administrador" if es_admin else "Capturista"
+)
+
+opciones = [
+    "Capturar checklist",
+    "Historial"
+]
+
+if es_admin:
+    opciones += [
+        "Dashboard",
+        "Carga de ASIG",
+        "Administración"
+    ]
+
+modulo = st.sidebar.radio(
+    "Menú principal",
+    opciones
+)
+
+if st.sidebar.button("Cerrar sesión"):
+
+    try:
+        db.auth.sign_out()
+    finally:
+        st.session_state.clear()
+
+    st.rerun()
+
+# =====================================
+# CAPTURA DE CHECKLIST
+# =====================================
+
+if modulo == "Capturar checklist":
+
+    st.subheader("🔎 Consulta de vehículos")
+
+    if not mapa_sucursales:
+        st.warning("No tienes una sucursal asignada.")
+        st.stop()
+
+    sucursal_id = st.selectbox(
+        "Sucursal de captura",
+        list(mapa_sucursales.keys()),
+        format_func=lambda x: mapa_sucursales[x]
+    )
+
+    if st.button("🔄 Actualizar base maestra"):
+        cargar_base.clear()
+        st.rerun()
+
+    try:
+        df = cargar_base()
+
+        st.success(
+            f"Base conectada | {len(df):,} vehículos"
+        )
+
+    except Exception:
+        st.error("No fue posible consultar la API maestra.")
+        st.stop()
+
+    busqueda = st.text_input(
+        "Últimos 9 caracteres de la serie",
+        max_chars=9
+    )
+
+    if busqueda:
+
+        busqueda = normalizar_serie(busqueda)
+
+        if len(busqueda) != 9:
+            st.warning("Ingresa exactamente 9 caracteres.")
+            st.stop()
+
+        resultados = df[
+            df["Serie"].str.endswith(busqueda)
+        ]
+
+        if resultados.empty:
+            st.error("No encontramos la unidad.")
+            st.stop()
+
+        seleccion = st.selectbox(
+            "Vehículo encontrado",
+            resultados.index.tolist(),
+            format_func=lambda i: (
+                f"{resultados.loc[i, 'Serie']} | "
+                f"{resultados.loc[i, 'Linea']} | "
+                f"{resultados.loc[i, 'Placa']}"
             )
-        else:
-            seleccion = resultados.index[0]
+        )
 
         unidad = resultados.loc[seleccion]
-
-        # =================================
-        # DATOS DE LA UNIDAD
-        # =================================
+        serie = unidad["Serie"]
 
         st.divider()
         st.subheader("📋 Información del vehículo")
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Línea", valor_mostrar(unidad["Linea"]))
-        c2.metric("Versión", valor_mostrar(unidad["Version"]))
-        c3.metric("Modelo", valor_mostrar(unidad["Modelo"]))
+
+        c1.metric("Línea", mostrar(unidad["Linea"]))
+        c2.metric("Versión", mostrar(unidad["Version"]))
+        c3.metric("Modelo", mostrar(unidad["Modelo"]))
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Placa", valor_mostrar(unidad["Placa"]))
-        c2.metric("Unidad de negocio", valor_mostrar(unidad["Unidad de Negocio"]))
-        c3.metric("Cliente", valor_mostrar(unidad["Nombre Cliente"]))
 
-        st.write("**Serie completa:**", valor_mostrar(unidad["Serie"]))
-        st.write("**Fecha de compra:**", valor_mostrar(unidad["Fecha Compra"]))
-        st.write("**Almacén:**", valor_mostrar(unidad["Almacen"]))
+        c1.metric("Placa", mostrar(unidad["Placa"]))
 
-        st.divider()
-        st.subheader("📝 Control de trámites")
-
-        st.info(
-            "Selecciona SÍ o NO para cada requisito. "
-            "Los requisitos marcados como NO se contabilizan como pendientes."
+        c2.metric(
+            "Unidad de negocio",
+            mostrar(unidad["Unidad de Negocio"])
         )
 
-        # Identificador de formulario por unidad para evitar mezclar capturas.
-        serie_id = normalizar_serie(unidad["Serie"])
-        form_key = f"form_checklist_{serie_id}"
+        c3.metric(
+            "Cliente",
+            mostrar(unidad["Nombre Cliente"])
+        )
 
-        respuestas = {}
-        respondidos = 0
-        cumplen = 0
-        pendientes = 0
+        st.write("**Serie completa:**", serie)
 
-        with st.form(form_key):
-            for categoria, requisitos in CHECKLIST.items():
-                st.markdown(f"### {categoria}")
+        st.write(
+            "**Fecha de compra:**",
+            mostrar(unidad["Fecha Compra"])
+        )
 
-                for indice, requisito in enumerate(requisitos):
-                    nombre = requisito["nombre"]
-                    respuesta_key = crear_clave(categoria, indice)
+        st.write(
+            "**Almacén:**",
+            mostrar(unidad["Almacen"])
+        )
 
-                    st.markdown(f"**{nombre}**")
-                    opciones_respuesta = ["Sin revisar", "Sí", "No"]
-                    respuesta = st.radio(
-                        f"Resultado: {nombre}",
-                        opciones_respuesta,
-                        horizontal=True,
-                        index=0,
-                        key=respuesta_key,
-                        label_visibility="collapsed"
-                    )
+        # =============================
+        # FOLIOS ASIG
+        # =============================
 
-                    fecha_valor = None
-                    if requisito.get("fecha"):
-                        fecha_valor = st.date_input(
-                            requisito["fecha"],
-                            value=None,
-                            key=f"fecha_{serie_id}_{categoria}_{indice}",
-                            format="DD/MM/YYYY"
-                        )
+        st.divider()
+        st.subheader("📂 Folios ASIG")
 
-                    observacion = st.text_input(
-                        "Observaciones (opcional)",
-                        key=f"obs_{serie_id}_{categoria}_{indice}"
-                    )
+        try:
 
-                    respuestas[nombre] = {
-                        "categoria": categoria,
-                        "respuesta": respuesta,
-                        "fecha": fecha_valor.isoformat() if fecha_valor else "",
-                        "campo_fecha": requisito.get("fecha", ""),
-                        "observaciones": observacion.strip(),
-                    }
-
-                    if respuesta in ("Sí", "No"):
-                        respondidos += 1
-                    if respuesta == "Sí":
-                        cumplen += 1
-                    elif respuesta == "No":
-                        pendientes += 1
-
-                    st.divider()
-
-            porcentaje = round((respondidos / TOTAL_REQUISITOS) * 100)
-            st.markdown(
-                f"**Avance de captura: {respondidos}/{TOTAL_REQUISITOS} "
-                f"({porcentaje}%)**"
+            folios = (
+                db.table("atenciones_vehiculo")
+                .select("folio,estado_atencion")
+                .eq("serie", serie)
+                .execute()
+                .data
             )
-            st.caption(
-                f"Cumplen: {cumplen} | Pendientes (NO): {pendientes} | "
-                f"Sin revisar: {TOTAL_REQUISITOS - respondidos}"
+
+            excluidos = {
+                normalizar_texto(e)
+                for e in ESTADOS_EXCLUIDOS
+            }
+
+            folios = [
+                f for f in folios
+                if normalizar_texto(
+                    f["estado_atencion"]
+                ) not in excluidos
+            ]
+
+            if folios:
+
+                st.dataframe(
+                    pd.DataFrame(folios).rename(columns={
+                        "folio": "Folio",
+                        "estado_atencion": "Estado de atención"
+                    }),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+            else:
+                st.info("Sin folios ASIG visibles.")
+
+        except Exception:
+            st.warning("No fue posible consultar los folios.")
+
+        # =============================
+        # CHECKLIST DINÁMICO
+        # =============================
+
+        st.divider()
+        st.subheader("📝 Checklist documental")
+
+        try:
+
+            requisitos = (
+                db.table("checklist_requisitos")
+                .select("*")
+                .eq("activo", True)
+                .order("orden")
+                .execute()
+                .data
+            )
+
+        except Exception:
+            st.error("No fue posible cargar el checklist.")
+            st.stop()
+
+        if not requisitos:
+            st.warning("No existen requisitos activos.")
+            st.stop()
+
+        respuestas = []
+
+        with st.form(f"checklist_{serie}_{sucursal_id}"):
+
+            categoria_anterior = None
+
+            for r in requisitos:
+
+                if r["categoria"] != categoria_anterior:
+
+                    st.markdown(
+                        f"### {r['categoria'].upper()}"
+                    )
+
+                    categoria_anterior = r["categoria"]
+
+                clave = f"{serie}_{sucursal_id}_{r['id']}"
+
+                respuesta = st.radio(
+                    r["requisito"].upper(),
+                    ["Sin revisar", "Sí", "No"],
+                    horizontal=True,
+                    key=f"respuesta_{clave}"
+                )
+
+                fecha = None
+
+                if r["requiere_fecha"]:
+
+                    fecha = st.date_input(
+                        r["nombre_campo_fecha"] or "Fecha",
+                        value=None,
+                        format="DD/MM/YYYY",
+                        min_value=date(1990, 1, 1),
+                        max_value=date(2100, 12, 31),
+                        key=f"fecha_{clave}"
+                    )
+
+                observacion = st.text_input(
+                    "Observaciones (opcional)",
+                    key=f"obs_{clave}"
+                )
+
+                respuestas.append({
+                    "requisito_id": r["id"],
+                    "respuesta": {
+                        "Sí": True,
+                        "No": False,
+                        "Sin revisar": None
+                    }[respuesta],
+                    "fecha_vencimiento": (
+                        fecha.isoformat()
+                        if fecha else None
+                    ),
+                    "observaciones": observacion
+                })
+
+                st.divider()
+
+            observaciones_generales = st.text_area(
+                "Observaciones generales"
             )
 
             guardar = st.form_submit_button(
-                "💾 Guardar checklist",
-                use_container_width=True
+                "💾 Guardar checklist"
             )
 
         if guardar:
-            # Leer las respuestas actuales del estado para guardar el formulario.
-            respuestas_guardadas = {}
-            for categoria, requisitos in CHECKLIST.items():
-                for indice, requisito in enumerate(requisitos):
-                    nombre = requisito["nombre"]
-                    respuesta = st.session_state.get(
-                        crear_clave(categoria, indice), "Sin revisar"
-                    )
-                    fecha = st.session_state.get(
-                        f"fecha_{serie_id}_{categoria}_{indice}"
-                    )
-                    observacion = st.session_state.get(
-                        f"obs_{serie_id}_{categoria}_{indice}", ""
-                    )
-                    respuestas_guardadas[nombre] = {
-                        "categoria": categoria,
-                        "respuesta": respuesta,
-                        "fecha": fecha.isoformat() if fecha else "",
-                        "campo_fecha": requisito.get("fecha", ""),
-                        "observaciones": observacion.strip(),
-                    }
 
-            registro = construir_registro(unidad, respuestas_guardadas)
-            st.session_state.checklists_guardados.append(registro)
-            st.success(
-                "Checklist guardado en esta sesión. "
-                "Puedes descargar el historial en Excel."
+            sin_revisar = sum(
+                r["respuesta"] is None
+                for r in respuestas
             )
-            st.rerun()
+
+            pendientes = sum(
+                r["respuesta"] is False
+                for r in respuestas
+            )
+
+            if sin_revisar:
+                estatus = "Pendiente"
+            elif pendientes:
+                estatus = "Con pendientes"
+            else:
+                estatus = "Completo"
+
+            revision = {
+                "serie": serie,
+                "placa": mostrar(unidad["Placa"]),
+                "linea": mostrar(unidad["Linea"]),
+                "version": mostrar(unidad["Version"]),
+                "modelo": mostrar(unidad["Modelo"]),
+                "unidad_negocio": mostrar(
+                    unidad["Unidad de Negocio"]
+                ),
+                "nombre_cliente": mostrar(
+                    unidad["Nombre Cliente"]
+                ),
+                "almacen": mostrar(unidad["Almacen"]),
+                "usuario": nombre_usuario,
+                "usuario_id": usuario_id,
+                "sucursal_id": sucursal_id,
+                "estatus": estatus,
+                "observaciones": observaciones_generales
+            }
+
+            revision_id = None
+
+            try:
+
+                resultado = (
+                    db.table("checklist_revisiones")
+                    .insert(revision)
+                    .execute()
+                )
+
+                revision_id = resultado.data[0]["id"]
+
+                for r in respuestas:
+                    r["revision_id"] = revision_id
+
+                db.table(
+                    "checklist_respuestas"
+                ).insert(respuestas).execute()
+
+                st.success(
+                    f"Checklist guardado correctamente. "
+                    f"Registro: {revision_id}"
+                )
+
+            except Exception:
+
+                if revision_id is not None:
+                    st.error(
+                        f"Se creó la revisión {revision_id}, "
+                        "pero no se confirmaron sus respuestas. "
+                        "Solicita revisión al administrador."
+                    )
+                else:
+                    st.error(
+                        "No se confirmó el guardado del checklist. "
+                        "Revisa el historial antes de reintentar."
+                    )
 
 # =====================================
-# HISTORIAL DE LA SESIÓN Y EXPORTACIÓN
+# HISTORIAL
 # =====================================
 
-st.divider()
-st.subheader("📚 Historial de checklists de esta sesión")
+elif modulo == "Historial":
 
-historial = st.session_state.checklists_guardados
+    st.subheader("📚 Historial de checklists")
 
-if not historial:
-    st.info("Todavía no hay checklists guardados en esta sesión.")
-else:
-    resumen = []
-    detalle = []
+    try:
 
-    for registro in historial:
-        respuestas = registro["respuestas"]
-        total_si = sum(1 for r in respuestas.values() if r["respuesta"] == "Sí")
-        total_no = sum(1 for r in respuestas.values() if r["respuesta"] == "No")
-        total_sin = sum(
-            1 for r in respuestas.values()
-            if r["respuesta"] == "Sin revisar"
+        revisiones = consultar_tabla(
+            "checklist_revisiones"
         )
-        resumen.append({
-            "Fecha de revisión": registro["fecha_revision"],
-            "Serie": registro["serie"],
-            "Placa": registro["placa"],
-            "Línea": registro["linea"],
-            "Modelo": registro["modelo"],
-            "Cliente": registro["cliente"],
-            "Sí": total_si,
-            "No / Pendientes": total_no,
-            "Sin revisar": total_sin,
-        })
 
-        for nombre, respuesta in respuestas.items():
-            detalle.append({
-                "Fecha de revisión": registro["fecha_revision"],
-                "Serie": registro["serie"],
-                "Placa": registro["placa"],
-                "Categoría": respuesta["categoria"],
-                "Requisito": nombre,
-                "Resultado": respuesta["respuesta"],
-                "Campo de fecha": respuesta["campo_fecha"],
-                "Fecha capturada": respuesta["fecha"],
-                "Observaciones": respuesta["observaciones"],
-            })
+        respuestas = consultar_tabla(
+            "checklist_respuestas"
+        )
 
-    df_resumen = pd.DataFrame(resumen)
-    df_detalle = pd.DataFrame(detalle)
+        requisitos = consultar_tabla(
+            "checklist_requisitos"
+        )
 
-    st.dataframe(df_resumen, use_container_width=True, hide_index=True)
+        df_historial = pd.DataFrame(revisiones)
+        df_detalle = pd.DataFrame(respuestas)
 
-    salida = BytesIO()
-    with pd.ExcelWriter(salida, engine="openpyxl") as writer:
-        df_resumen.to_excel(writer, sheet_name="Resumen", index=False)
-        df_detalle.to_excel(writer, sheet_name="Detalle", index=False)
+        if df_historial.empty:
+            st.info("No hay registros disponibles.")
 
-    st.download_button(
-        "📥 Descargar historial en Excel",
-        data=salida.getvalue(),
-        file_name="Casanova_Checklists.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+        else:
+
+            df_historial["Sucursal"] = (
+                df_historial["sucursal_id"]
+                .map(mapa_sucursales)
+            )
+
+            df_historial = df_historial.sort_values(
+                "fecha_revision",
+                ascending=False
+            )
+
+            if not df_detalle.empty:
+
+                mapa_requisitos = {
+                    r["id"]: r["requisito"]
+                    for r in requisitos
+                }
+
+                df_detalle["Requisito"] = (
+                    df_detalle["requisito_id"]
+                    .map(mapa_requisitos)
+                )
+
+            st.dataframe(
+                df_historial,
+                hide_index=True,
+                use_container_width=True
+            )
+
+            descargar_excel(
+                {
+                    "Historial": df_historial,
+                    "Respuestas": df_detalle
+                },
+                "Casanova_Checklists.xlsx"
+            )
+
+    except Exception:
+        st.error("No fue posible consultar el historial.")
+
+# =====================================
+# DASHBOARD
+# =====================================
+
+elif modulo == "Dashboard" and es_admin:
+
+    st.subheader("📊 Dashboard general")
+
+    try:
+
+        datos = consultar_tabla(
+            "checklist_revisiones"
+        )
+
+        df = pd.DataFrame(datos)
+
+        if df.empty:
+            st.info("Todavía no hay capturas.")
+
+        else:
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric("Checklists", len(df))
+
+            c2.metric(
+                "Unidades revisadas",
+                df["serie"].nunique()
+            )
+
+            c3.metric(
+                "Completos",
+                int((df["estatus"] == "Completo").sum())
+            )
+
+            c4.metric(
+                "Con pendientes",
+                int((df["estatus"] != "Completo").sum())
+            )
+
+            df["Sucursal"] = (
+                df["sucursal_id"]
+                .map(mapa_sucursales)
+            )
+
+            st.markdown("### Capturas por sucursal")
+
+            st.bar_chart(
+                df["Sucursal"].value_counts()
+            )
+
+            st.markdown("### Estatus de las revisiones")
+
+            st.bar_chart(
+                df["estatus"].value_counts()
+            )
+
+            st.dataframe(
+                df,
+                hide_index=True,
+                use_container_width=True
+            )
+
+            descargar_excel(
+                {"Dashboard": df},
+                "Dashboard_Casanova.xlsx"
+            )
+
+    except Exception:
+        st.error("No fue posible cargar el dashboard.")
+
+# =====================================
+# CARGA DE ASIG
+# =====================================
+
+elif modulo == "Carga de ASIG" and es_admin:
+
+    st.subheader("📂 Actualización de folios ASIG")
+
+    st.info(
+        "El Excel debe contener Serie del Vehículo, "
+        "Folio y Estado de atención."
     )
 
-    st.warning(
-        "Importante: por ahora los registros se conservan durante la sesión "
-        "activa de Streamlit. Para conservarlos permanentemente entre sesiones "
-        "y usuarios, el siguiente paso es conectar una base de datos como "
-        "Supabase o PostgreSQL."
+    archivo = st.file_uploader(
+        "Selecciona el archivo Excel",
+        type=["xlsx"]
     )
 
+    if archivo:
+
+        try:
+
+            df = pd.read_excel(
+                archivo,
+                dtype=str
+            ).fillna("")
+
+            df.columns = [
+                normalizar_texto(c)
+                for c in df.columns
+            ]
+
+            columnas = [
+                "serie del vehiculo",
+                "folio",
+                "estado de atencion"
+            ]
+
+            faltantes = [
+                c for c in columnas
+                if c not in df.columns
+            ]
+
+            if faltantes:
+                st.error(
+                    "Columnas faltantes: "
+                    + ", ".join(faltantes)
+                )
+                st.stop()
+
+            df = df[columnas].copy()
+
+            df.columns = [
+                "serie",
+                "folio",
+                "estado_atencion"
+            ]
+
+            df["serie"] = df["serie"].apply(
+                normalizar_serie
+            )
+
+            df["folio"] = (
+                df["folio"].str.strip().str.upper()
+            )
+
+            df["estado_atencion"] = (
+                df["estado_atencion"].str.strip()
+            )
+
+            df = df[
+                (df["serie"] != "") &
+                (df["folio"] != "") &
+                (df["estado_atencion"] != "")
+            ]
+
+            df = df.drop_duplicates(
+                subset=["serie", "folio"],
+                keep="last"
+            )
+
+            st.metric("Folios válidos", len(df))
+
+            st.dataframe(
+                df.head(100),
+                hide_index=True
+            )
+
+            if st.button("💾 Actualizar folios en Supabase"):
+
+                registros = df.to_dict("records")
+
+                for r in registros:
+                    r["fecha_actualizacion"] = (
+                        datetime.now().astimezone().isoformat()
+                    )
+
+                progreso = st.progress(0)
+
+                for inicio in range(
+                    0, len(registros), 500
+                ):
+
+                    bloque = registros[
+                        inicio:inicio + 500
+                    ]
+
+                    db.table(
+                        "atenciones_vehiculo"
+                    ).upsert(
+                        bloque,
+                        on_conflict="serie,folio"
+                    ).execute()
+
+                    progreso.progress(
+                        min(
+                            (inicio + len(bloque))
+                            / len(registros),
+                            1.0
+                        )
+                    )
+
+                st.success(
+                    f"{len(registros):,} folios actualizados."
+                )
+
+        except Exception:
+            st.error(
+                "No se completó la carga. "
+                "Algunos bloques podrían haberse guardado."
+            )
+
+# =====================================
+# ADMINISTRACIÓN
+# =====================================
+
+elif modulo == "Administración" and es_admin:
+
+    st.subheader("⚙️ Administración")
+
+    tab1, tab2 = st.tabs([
+        "Usuarios",
+        "Requisitos"
+    ])
+
+    with tab1:
+
+        try:
+
+            usuarios = consultar_tabla("perfiles")
+
+            st.dataframe(
+                pd.DataFrame(usuarios),
+                hide_index=True,
+                use_container_width=True
+            )
+
+            st.caption(
+                "El alta de cuentas y contraseñas "
+                "se realiza por ahora en Supabase Auth."
+            )
+
+        except Exception:
+            st.error("No fue posible consultar usuarios.")
+
+    with tab2:
+
+        try:
+
+            requisitos = (
+                db.table("checklist_requisitos")
+                .select("*")
+                .order("orden")
+                .execute()
+                .data
+            )
+
+            st.dataframe(
+                pd.DataFrame(requisitos),
+                hide_index=True
+            )
+
+            if requisitos:
+
+                mapa = {
+                    r["id"]: r
+                    for r in requisitos
+                }
+
+                elegido = st.selectbox(
+                    "Seleccionar requisito",
+                    list(mapa.keys()),
+                    format_func=lambda x: (
+                        mapa[x]["requisito"]
+                    )
+                )
+
+                actual = mapa[elegido]
+
+                with st.form(
+                    f"editar_requisito_{elegido}"
+                ):
+
+                    activo = st.checkbox(
+                        "Requisito activo",
+                        value=bool(actual["activo"])
+                    )
+
+                    orden = st.number_input(
+                        "Orden",
+                        min_value=1,
+                        value=int(actual["orden"])
+                    )
+
+                    guardar = st.form_submit_button(
+                        "Guardar cambios"
+                    )
+
+                if guardar:
+
+                    db.table(
+                        "checklist_requisitos"
+                    ).update({
+                        "activo": activo,
+                        "orden": int(orden)
+                    }).eq(
+                        "id", elegido
+                    ).execute()
+
+                    st.rerun()
+
+            st.markdown("### Agregar requisito")
+
+            with st.form("nuevo_requisito"):
+
+                categoria = st.text_input("Categoría")
+                requisito = st.text_input("Requisito")
+                requiere_fecha = st.checkbox(
+                    "Solicitar fecha"
+                )
+                nombre_fecha = st.text_input(
+                    "Nombre del campo de fecha"
+                )
+
+                orden = st.number_input(
+                    "Orden del nuevo requisito",
+                    min_value=1,
+                    value=8
+                )
+
+                agregar = st.form_submit_button(
+                    "Agregar requisito"
+                )
+
+            if agregar:
+
+                if not categoria.strip() or not requisito.strip():
+                    st.warning(
+                        "Completa la categoría y el requisito."
+                    )
+
+                elif requiere_fecha and not nombre_fecha.strip():
+                    st.warning("Indica el nombre de la fecha.")
+
+                elif any(
+                    normalizar_texto(r["requisito"])
+                    == normalizar_texto(requisito)
+                    for r in requisitos
+                ):
+                    st.warning("El requisito ya existe.")
+
+                else:
+
+                    db.table(
+                        "checklist_requisitos"
+                    ).insert({
+                        "categoria": categoria.upper(),
+                        "requisito": requisito.upper(),
+                        "requiere_fecha": requiere_fecha,
+                        "nombre_campo_fecha": (
+                            nombre_fecha.upper()
+                            if requiere_fecha else None
+                        ),
+                        "activo": True,
+                        "orden": int(orden)
+                    }).execute()
+
+                    st.rerun()
+
+        except Exception:
+            st.error(
+                "No fue posible administrar los requisitos."
+            )
