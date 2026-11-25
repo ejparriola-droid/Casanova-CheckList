@@ -1,5 +1,6 @@
-
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 import pandas as pd
 import requests
 import re
@@ -219,6 +220,18 @@ def cargar_base():
     return df
 
 
+def estado_respuesta(r):
+    if r is None:
+        return "SIN REGISTRO"
+    if r.get("no_aplica"):
+        return "NO APLICA"
+    if r.get("respuesta") is True:
+        return "SÍ"
+    if r.get("respuesta") is False:
+        return "NO"
+    return "SIN REVISAR"
+
+
 def construir_concentrado(df, respuestas, requisitos):
     columnas = {
         "id": "ID revisión", "serie": "Serie", "placa": "Placa",
@@ -238,7 +251,7 @@ def construir_concentrado(df, respuestas, requisitos):
         if nombre in base.columns:
             nombre += f" ({req['id']})"
         filas = [detalle.get((i, req["id"])) for i in base["ID revisión"]]
-        base[nombre] = ["No aplica a esta revisión" if r is None else "SÍ" if r.get("respuesta") is True else "NO" if r.get("respuesta") is False else "SIN REVISAR" for r in filas]
+        base[nombre] = [estado_respuesta(r) for r in filas]
         if req.get("requiere_fecha") or any(r and r.get("fecha_vencimiento") for r in filas):
             campo = (req.get("nombre_campo_fecha") or f"FECHA {nombre}").upper()
             if campo in base.columns:
@@ -270,7 +283,7 @@ def excel_concentrado(df):
                     c.number_format = "dd/mm/yyyy hh:mm" if col == "Fecha de revisión" else "dd/mm/yyyy"
                 elif isinstance(c.value, str):
                     c.data_type = "s"
-                    colores = {"SÍ": ("E2F0D9", "216E39"), "NO": ("FCE4D6", "A4262C"), "SIN REVISAR": ("FFF2CC", "805B10")}
+                    colores = {"SÍ": ("E2F0D9", "216E39"), "NO": ("FCE4D6", "A4262C"), "SIN REVISAR": ("FFF2CC", "805B10"), "NO APLICA": ("E2E8F0", "475569"), "SIN REGISTRO": ("FFF2CC", "805B10")}
                     if c.value in colores:
                         fondo, letra = colores[c.value]
                         c.fill = PatternFill("solid", fgColor=fondo)
@@ -663,7 +676,8 @@ if modulo == "Capturar checklist":
 
                 respuesta = st.radio(
                     r["requisito"].upper(),
-                    ["Sin revisar", "Sí", "No"],
+                    ["Sí", "No", "No aplica"],
+                    index=None,
                     horizontal=True,
                     key=f"respuesta_{clave}"
                 )
@@ -691,11 +705,13 @@ if modulo == "Capturar checklist":
                     "respuesta": {
                         "Sí": True,
                         "No": False,
-                        "Sin revisar": None
+                        "No aplica": None,
+                        None: None
                     }[respuesta],
+                    "no_aplica": respuesta == "No aplica",
                     "fecha_vencimiento": (
                         fecha.isoformat()
-                        if fecha else None
+                        if fecha and respuesta == "Sí" else None
                     ),
                     "observaciones": observacion
                 })
@@ -713,7 +729,7 @@ if modulo == "Capturar checklist":
         if guardar:
 
             sin_revisar = sum(
-                r["respuesta"] is None
+                r["respuesta"] is None and not r["no_aplica"]
                 for r in respuestas
             )
 
@@ -723,11 +739,12 @@ if modulo == "Capturar checklist":
             )
 
             if sin_revisar:
-                estatus = "Pendiente"
+                st.warning("Responde todos los requisitos antes de guardar.")
+                st.stop()
             elif pendientes:
                 estatus = "Con pendientes"
             else:
-                estatus = "Completo"
+                estatus = "No aplica" if all(r["no_aplica"] for r in respuestas) else "Completo"
 
             revision = {
                 "serie": serie,
@@ -849,71 +866,141 @@ elif modulo == "Historial":
 # =====================================
 
 elif modulo == "Dashboard" and es_admin:
-
-    st.subheader("📊 Dashboard general")
-
+    st.subheader("Resumen ejecutivo | Control documental")
+    colores = {"SÍ": "#218838", "NO": "#C53B3B", "NO APLICA": "#94A3B8",
+               "SIN REVISAR": "#D9A521", "SIN REGISTRO": "#D9A521",
+               "Completo": "#218838", "Con pendientes": "#C53B3B",
+               "Histórico incompleto": "#D9A521", "No aplica": "#94A3B8"}
     try:
-
-        datos = consultar_tabla(
-            "checklist_revisiones"
-        )
-
-        df = pd.DataFrame(datos)
-
+        df = pd.DataFrame(consultar_tabla("checklist_revisiones"))
+        respuestas = consultar_tabla("checklist_respuestas")
+        requisitos = consultar_tabla("checklist_requisitos")
+        activos = sorted([r for r in requisitos if r.get("activo")], key=lambda r: (r.get("orden") or 0, r["id"]))
+        if df.empty or not activos:
+            st.info("No hay revisiones o requisitos activos disponibles.")
+            st.stop()
+        df["Sucursal"] = df["sucursal_id"].map(mapa_sucursales).fillna("Sin información")
+        df["Fecha de revisión"] = pd.to_datetime(df["fecha_revision"], utc=True, errors="coerce", format="mixed").dt.tz_convert("America/Mexico_City").dt.tz_localize(None)
+        a,b,c = st.columns(3)
+        suc = a.selectbox("Sucursal", ["Todas"] + sorted(df["Sucursal"].unique()))
+        desde = b.date_input("Desde", value=None, format="DD/MM/YYYY")
+        hasta = c.date_input("Hasta", value=None, format="DD/MM/YYYY")
+        if desde and hasta and desde > hasta:
+            st.warning("Revisa el periodo seleccionado.")
+            st.stop()
+        if suc != "Todas": df = df[df["Sucursal"] == suc]
+        if desde: df = df[df["Fecha de revisión"] >= pd.Timestamp(desde)]
+        if hasta: df = df[df["Fecha de revisión"] < pd.Timestamp(hasta) + pd.Timedelta(days=1)]
         if df.empty:
-            st.info("Todavía no hay capturas.")
-
-        else:
-
-            c1, c2, c3, c4 = st.columns(4)
-
-            c1.metric("Checklists", len(df))
-
-            c2.metric(
-                "Unidades revisadas",
-                df["serie"].nunique()
-            )
-
-            c3.metric(
-                "Completos",
-                int((df["estatus"] == "Completo").sum())
-            )
-
-            c4.metric(
-                "Con pendientes",
-                int((df["estatus"] != "Completo").sum())
-            )
-
-            df["Sucursal"] = (
-                df["sucursal_id"]
-                .map(mapa_sucursales)
-            )
-
-            st.markdown("### Capturas por sucursal")
-
-            st.bar_chart(
-                df["Sucursal"].value_counts()
-            )
-
-            st.markdown("### Estatus de las revisiones")
-
-            st.bar_chart(
-                df["estatus"].value_counts()
-            )
-
-            st.dataframe(
-                df,
-                hide_index=True,
-                use_container_width=True
-            )
-
-            descargar_excel(
-                {"Dashboard": df},
-                "Dashboard_Casanova.xlsx"
-            )
-
+            st.info("No hay revisiones para estos filtros.")
+            st.stop()
+        ult = df.sort_values(["Fecha de revisión", "id"], na_position="first").drop_duplicates("serie", keep="last").copy()
+        lookup = {(r["revision_id"], r["requisito_id"]): r for r in respuestas}
+        nombres = {r["id"]: r["requisito"] for r in activos}
+        largo = pd.DataFrame([{"id": i, "Sucursal": sucursal, "Requisito": nombres[r["id"]], "Respuesta": estado_respuesta(lookup.get((i,r["id"])))} for i,sucursal in zip(ult["id"],ult["Sucursal"]) for r in activos])
+        def clasificar(g):
+            estados = set(g["Respuesta"])
+            if "NO" in estados: return "Con pendientes"
+            if estados & {"SIN REVISAR", "SIN REGISTRO"}: return "Histórico incompleto"
+            if estados == {"NO APLICA"}: return "No aplica"
+            return "Completo"
+        ult["Resultado"] = ult["id"].map({i: clasificar(g) for i,g in largo.groupby("id")})
+        n = len(ult); completos = int(ult["Resultado"].eq("Completo").sum()); pendientes = int(ult["Resultado"].eq("Con pendientes").sum())
+        aplicables = n - int(ult["Resultado"].eq("No aplica").sum())
+        a,b,c,d = st.columns(4)
+        a.metric("Unidades revisadas", f"{n:,}")
+        b.metric("Cumplimiento general", f"{completos/aplicables:.1%}" if aplicables else "N/A")
+        c.metric("Unidades completas", f"{completos:,}")
+        d.metric("Con pendientes (NO)", f"{pendientes:,}")
+        st.caption("Última revisión por serie dentro de los filtros. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
+        def estilo(fig, altura=330):
+            fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#17365D"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
+            return fig
+        def seleccion(fig, key, destino):
+            evento = st.plotly_chart(estilo(fig), use_container_width=True, key=key, on_select="rerun", selection_mode="points")
+            puntos = evento.selection.points
+            if puntos and puntos != st.session_state.get(key + "_ultima"):
+                st.session_state[key + "_ultima"] = puntos
+                p = puntos[-1]
+                datos = p.get("customdata")
+                if datos:
+                    st.session_state["dash_filtro"] = (destino, tuple(datos))
+            return evento
+        a,b = st.columns(2)
+        with a:
+            st.markdown("**Situación documental**")
+            conteo = ult["Resultado"].value_counts().rename_axis("Resultado").reset_index(name="Unidades")
+            fig = px.pie(conteo, names="Resultado", values="Unidades", hole=.68, color="Resultado", color_discrete_map=colores)
+            fig.update_traces(textinfo="value+percent")
+            fig.add_annotation(text=f"<b>{n:,}</b>", x=.5,y=.5,showarrow=False,font_size=30)
+            st.plotly_chart(estilo(fig), use_container_width=True)
+        with b:
+            st.markdown("**Avance acumulado de unidades**")
+            primera = df.dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
+            avance = primera.groupby(primera["Fecha de revisión"].dt.normalize()).size().cumsum().rename("Unidades").reset_index()
+            fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#174A7E"])
+            fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
+            st.plotly_chart(estilo(fig), use_container_width=True)
+        st.markdown("### Cumplimiento por documento")
+        st.caption("Selecciona un requisito y una respuesta en el detalle inferior; también puedes seleccionar segmentos de las barras comparativas.")
+        for inicio in range(0,len(activos),3):
+            cols = st.columns(3)
+            for col,r in zip(cols,activos[inicio:inicio+3]):
+                with col:
+                    nombre = nombres[r["id"]]
+                    g = largo[largo["Requisito"] == nombre]["Respuesta"].value_counts()
+                    si=int(g.get("SÍ",0)); no=int(g.get("NO",0)); na=int(g.get("NO APLICA",0)); hist=n-si-no-na
+                    pct=f"{si/(n-na):.0%}" if n>na else "N/A"
+                    st.markdown(f"**{nombre}**")
+                    fig=go.Figure(go.Pie(labels=["SÍ","NO","NO APLICA","Histórico"],values=[si,no,na,hist],hole=.72,marker_colors=[colores["SÍ"],colores["NO"],colores["NO APLICA"],colores["SIN REVISAR"]],textinfo="none",sort=False))
+                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=27)
+                    fig.update_layout(showlegend=False)
+                    st.plotly_chart(estilo(fig,190),use_container_width=True,key=f"doc_{r['id']}")
+                    st.caption(f"SÍ: {si:,}  |  NO: {no:,}  |  N/A: {na:,}" + (f"  |  Histórico: {hist:,}" if hist else ""))
+                    if st.button(f"Ver pendientes ({no})",key=f"pend_{r['id']}"):
+                        st.session_state["dash_filtro"]=("documento",(nombre,"NO"))
+        st.markdown("### Comparativo por sucursal")
+        resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
+        fig=px.bar(resumen,x="Sucursal",y="Unidades",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
+        seleccion(fig,"dash_barras","sucursal")
+        st.markdown("### Mapa de calor documental")
+        calor=largo.assign(si=largo["Respuesta"].eq("SÍ").astype(int),aplica=largo["Respuesta"].ne("NO APLICA").astype(int)).groupby(["Sucursal","Requisito"])[["si","aplica"]].sum()
+        matriz=(100*calor["si"]/calor["aplica"].replace(0,float("nan"))).unstack().reindex(columns=list(nombres.values()))
+        fig=go.Figure(go.Heatmap(z=matriz.values,x=matriz.columns,y=matriz.index,zmin=0,zmax=100,colorscale=[[0,"#C53B3B"],[.8,"#F2D17B"],[1,"#218838"]],text=[[f"{v:.0f}%" if pd.notna(v) else "N/A" for v in fila] for fila in matriz.values],texttemplate="%{text}",hovertemplate="%{y}<br>%{x}: %{text}<extra></extra>"))
+        st.plotly_chart(estilo(fig,380),use_container_width=True)
+        st.markdown("### Detalle de unidades")
+        filtro=st.session_state.get("dash_filtro")
+        if st.button("Limpiar selección de gráfica"):
+            st.session_state.pop("dash_filtro",None)
+            st.session_state["dash_reset"]=st.session_state.get("dash_reset",0)+1
+            filtro=None
+        detalle=ult.copy()
+        if filtro:
+            tipo, valores=filtro
+            if tipo=="documento":
+                ids=largo.loc[(largo["Requisito"]==valores[0]) & (largo["Respuesta"]==valores[1]),"id"]
+                detalle=detalle[detalle["id"].isin(ids)]
+            else:
+                detalle=detalle[(detalle["Sucursal"]==valores[0]) & (detalle["Resultado"]==valores[1])]
+            st.caption("Selección: " + " · ".join(valores))
+        a,b,c=st.columns(3)
+        doc=a.selectbox("Documento",["Todos"]+list(nombres.values()))
+        resp=b.selectbox("Respuesta",["Todas","SÍ","NO","NO APLICA","SIN REVISAR","SIN REGISTRO"])
+        resultado=c.selectbox("Situación general",["Todas","Completo","Con pendientes","Histórico incompleto","No aplica"])
+        if doc!="Todos" or resp!="Todas":
+            g=largo
+            if doc!="Todos": g=g[g["Requisito"]==doc]
+            if resp!="Todas": g=g[g["Respuesta"]==resp]
+            detalle=detalle[detalle["id"].isin(g["id"])]
+        if resultado!="Todas": detalle=detalle[detalle["Resultado"]==resultado]
+        st.metric("Unidades seleccionadas",len(detalle))
+        concentrado=construir_concentrado(detalle,respuestas,requisitos)
+        concentrado["Situación actual"] = detalle["Resultado"].to_numpy()
+        st.dataframe(concentrado,hide_index=True,use_container_width=True)
+        if not concentrado.empty:
+            st.download_button("Descargar detalle Excel",excel_concentrado(concentrado),"Dashboard_Casanova.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     except Exception:
-        st.error("No fue posible cargar el dashboard.")
+        st.error("No fue posible cargar el dashboard. Verifica la conexión y las versiones de Streamlit y Plotly.")
 
 # =====================================
 # CARGA DE ASIG
