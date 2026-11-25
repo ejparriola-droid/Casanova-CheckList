@@ -113,7 +113,7 @@ def administrador_privado():
         raise PermissionError("Sesión inválida")
     privado = cliente_privado()
     filas = privado.table("perfiles").select("rol,activo").eq("id", identidad.id).execute().data
-    if not filas or not filas[0]["activo"] or filas[0]["rol"] != "administrador":
+    if not filas or not filas[0]["activo"] or filas[0]["rol"] != "maestro":
         raise PermissionError("Acceso denegado")
     return privado
 
@@ -432,9 +432,13 @@ except Exception:
 
     st.stop()
 
-es_admin = (
-    str(perfil["rol"]).lower() == "administrador"
-)
+rol_actual = perfil["rol"]
+es_maestro = rol_actual == "maestro"
+es_admin = rol_actual in ("maestro", "administrador")
+consulta_general = es_admin or rol_actual == "administracion_flota"
+puede_capturar = es_admin or rol_actual == "capturista"
+ROLES = ["capturista", "administrador", "administracion_flota", "maestro"]
+ETIQUETAS = {"capturista": "Capturista", "administrador": "Administrador operativo", "administracion_flota": "Administración de Flota", "maestro": "Maestro"}
 
 usuario_id = perfil["id"]
 nombre_usuario = perfil["nombre"]
@@ -470,22 +474,12 @@ st.sidebar.title("CASANOVA")
 
 st.sidebar.write(f"👤 {nombre_usuario}")
 
-st.sidebar.caption(
-    "Administrador" if es_admin else "Capturista"
-)
-
-opciones = [
-    "Capturar checklist",
-    "Historial",
-    "Mi contraseña"
-]
-
+st.sidebar.caption(ETIQUETAS.get(rol_actual, rol_actual))
+opciones = (["Capturar checklist"] if puede_capturar else []) + ["Historial", "Mi contraseña", "Dashboard"]
+if consulta_general:
+    opciones.append("Carga de ASIG")
 if es_admin:
-    opciones += [
-        "Dashboard",
-        "Carga de ASIG",
-        "Administración"
-    ]
+    opciones.append("Administración")
 
 modulo = st.sidebar.radio(
     "Menú principal",
@@ -505,7 +499,7 @@ if st.sidebar.button("Cerrar sesión"):
 # CAPTURA DE CHECKLIST
 # =====================================
 
-if modulo == "Capturar checklist":
+if modulo == "Capturar checklist" and puede_capturar:
 
     st.subheader("🔎 Consulta de vehículos")
 
@@ -685,6 +679,11 @@ if modulo == "Capturar checklist":
             st.warning("No existen requisitos activos.")
             st.stop()
 
+        ultima = db.table("checklist_revisiones").select("id,fecha_revision").eq("serie", serie).order("fecha_revision", desc=True).order("id", desc=True).limit(1).execute().data
+        previas = {}
+        if ultima:
+            previas = {r["requisito_id"]: r for r in db.table("checklist_respuestas").select("*").eq("revision_id", ultima[0]["id"]).execute().data}
+            st.caption("Respuestas de la última revisión accesible. Confirma que siguen vigentes antes de guardar.")
         respuestas = []
 
         with st.form(f"checklist_{serie}_{sucursal_id}"):
@@ -701,12 +700,14 @@ if modulo == "Capturar checklist":
 
                     categoria_anterior = r["categoria"]
 
-                clave = f"{serie}_{sucursal_id}_{r['id']}"
+                clave = f"{serie}_{sucursal_id}_{r['id']}_{ultima[0]['id'] if ultima else 0}"
+                previa = previas.get(r["id"], {})
+                indice = {"SÍ": 0, "NO": 1, "NO APLICA": 2}.get(estado_respuesta(previa))
 
                 respuesta = st.radio(
                     r["requisito"].upper(),
                     ["Sí", "No", "No aplica"],
-                    index=None,
+                    index=indice,
                     horizontal=True,
                     key=f"respuesta_{clave}"
                 )
@@ -717,7 +718,7 @@ if modulo == "Capturar checklist":
 
                     fecha = st.date_input(
                         r["nombre_campo_fecha"] or "Fecha",
-                        value=None,
+                        value=date.fromisoformat(previa["fecha_vencimiento"]) if previa.get("fecha_vencimiento") else None,
                         format="DD/MM/YYYY",
                         min_value=date(1990, 1, 1),
                         max_value=date(2100, 12, 31),
@@ -726,6 +727,7 @@ if modulo == "Capturar checklist":
 
                 observacion = st.text_input(
                     "Observaciones (opcional)",
+                    value=previa.get("observaciones") or "",
                     key=f"obs_{clave}"
                 )
 
@@ -894,7 +896,7 @@ elif modulo == "Historial":
 # DASHBOARD
 # =====================================
 
-elif modulo == "Dashboard" and es_admin:
+elif modulo == "Dashboard":
     st.subheader("Resumen ejecutivo | Control documental")
     colores = {"SÍ": "#004876", "NO": "#FFB700", "NO APLICA": "#D2DCEB",
                "SIN REVISAR": "#8493AD", "SIN REGISTRO": "#8493AD",
@@ -917,6 +919,15 @@ elif modulo == "Dashboard" and es_admin:
         if desde and hasta and desde > hasta:
             st.warning("Revisa el periodo seleccionado.")
             st.stop()
+        ids_vigentes = set()
+        offset = 0
+        while True:
+            bloque = db.rpc("revisiones_vigentes_autorizadas").order("id").range(offset, offset+499).execute().data
+            ids_vigentes.update(r["id"] for r in bloque)
+            if len(bloque) < 500: break
+            offset += 500
+        historial_visible = df.copy()
+        df = df[df["id"].isin(ids_vigentes)]
         if suc != "Todas": df = df[df["Sucursal"] == suc]
         if desde: df = df[df["Fecha de revisión"] >= pd.Timestamp(desde)]
         if hasta: df = df[df["Fecha de revisión"] < pd.Timestamp(hasta) + pd.Timedelta(days=1)]
@@ -941,7 +952,7 @@ elif modulo == "Dashboard" and es_admin:
         b.metric("Cumplimiento general", f"{completos/aplicables:.1%}" if aplicables else "N/A")
         c.metric("Unidades completas", f"{completos:,}")
         d.metric("Con pendientes (NO)", f"{pendientes:,}")
-        st.caption("Última revisión por serie dentro de los filtros. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
+        st.caption("Última revisión global por serie, después filtrada por sucursal y fecha. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
         def aplicar_seleccion(tipo=None, valores=()):
             st.session_state["dash_doc"] = "Todos"
             st.session_state["dash_resp"] = "Todas"
@@ -981,6 +992,21 @@ elif modulo == "Dashboard" and es_admin:
         st.dataframe(concentrado,hide_index=True,use_container_width=True)
         if not concentrado.empty:
             st.download_button("Descargar detalle Excel",excel_concentrado(concentrado),"Dashboard_Casanova.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        pendientes_excel = []
+        hoy = pd.Timestamp.now(tz="America/Mexico_City").tz_localize(None).normalize()
+        for _, unidad in detalle.iterrows():
+            historial = historial_visible[historial_visible["serie"] == unidad["serie"]].sort_values(["Fecha de revisión", "id"], ascending=False)
+            for req in activos:
+                if estado_respuesta(lookup.get((unidad["id"], req["id"]))) != "NO":
+                    continue
+                inicio = unidad["Fecha de revisión"]
+                for _, anterior in historial.iterrows():
+                    if estado_respuesta(lookup.get((anterior["id"], req["id"]))) != "NO":
+                        break
+                    inicio = anterior["Fecha de revisión"]
+                pendientes_excel.append({"Serie": unidad["serie"], "Placa": unidad["placa"], "Línea": unidad["linea"], "Modelo": unidad["modelo"], "Cliente": unidad["nombre_cliente"], "Unidad de negocio": unidad["unidad_negocio"], "Almacén": unidad["almacen"], "Sucursal": unidad["Sucursal"], "Responsable": unidad["usuario"], "Fecha de revisión": unidad["Fecha de revisión"], "Pendiente": req["requisito"], "Detectado desde (historial visible)": inicio, "Días de pendiente": (hoy-inicio.normalize()).days if pd.notna(inicio) else None})
+        if pendientes_excel:
+            st.download_button("Descargar pendientes Excel", excel_concentrado(pd.DataFrame(pendientes_excel)), "Pendientes_Casanova.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.divider()
         def estilo(fig, altura=330):
             fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
@@ -1051,7 +1077,7 @@ elif modulo == "Dashboard" and es_admin:
 # CARGA DE ASIG
 # =====================================
 
-elif modulo == "Carga de ASIG" and es_admin:
+elif modulo == "Carga de ASIG" and consulta_general:
 
     st.subheader("📂 Actualización de folios ASIG")
 
@@ -1203,90 +1229,91 @@ elif modulo == "Administración" and es_admin:
 
     st.subheader("⚙️ Administración")
 
-    tab1, tab2 = st.tabs([
-        "Usuarios",
-        "Requisitos"
-    ])
+    if es_maestro:
+        tab1, tab2 = st.tabs(["Usuarios", "Requisitos"])
+    else:
+        tab2 = st.container()
 
-    with tab1:
-        try:
-            privado = administrador_privado()
-            usuarios = consultar_tabla("perfiles")
-            asignaciones = privado.table("usuario_sucursales").select("*").execute().data
-            st.dataframe(pd.DataFrame([{
-                "Nombre": u["nombre"], "Usuario": u.get("usuario"), "Rol": u["rol"],
-                "Activo": u["activo"], "Sucursales": "Todas" if u["rol"] == "administrador" else ", ".join(mapa_sucursales.get(a["sucursal_id"], str(a["sucursal_id"])) for a in asignaciones if a["usuario_id"] == u["id"])
-            } for u in usuarios]), hide_index=True, use_container_width=True)
-            if st.session_state.pop("mensaje_usuario", False):
-                st.success("Cambios guardados.")
-            st.markdown("### Nuevo usuario")
-            with st.form("alta_usuario", clear_on_submit=False):
-                nombre = st.text_input("Nombre completo")
-                login = st.text_input("Nombre de usuario")
-                clave = st.text_input("Contraseña inicial (mínimo 12 caracteres)", type="password")
-                rol = st.selectbox("Rol", ["capturista", "administrador"])
-                sedes = st.multiselect("Sucursales (obligatorio para capturistas)", list(mapa_sucursales), format_func=mapa_sucursales.get)
-                alta = st.form_submit_button("Crear usuario")
-            if alta:
-                login = login.strip().lower()
-                if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or len(clave) < 12 or (rol == "capturista" and not sedes):
-                    st.warning("Completa los datos, utiliza un usuario sin espacios y una contraseña de al menos 12 caracteres.")
-                elif any(u.get("usuario") == login for u in usuarios):
-                    st.warning("El usuario ya existe.")
-                else:
-                    privado = administrador_privado()
-                    nuevo = privado.auth.admin.create_user({"email": f"{uuid.uuid4().hex}@casanova.example", "password": clave, "email_confirm": True}).user.id
-                    try:
-                        privado.table("perfiles").upsert({"id": nuevo, "nombre": nombre.strip(), "usuario": login, "rol": rol, "activo": False}).execute()
-                        if sedes and rol == "capturista":
-                            privado.table("usuario_sucursales").insert([{"usuario_id": nuevo, "sucursal_id": x} for x in sedes]).execute()
-                        privado.table("perfiles").update({"activo": True}).eq("id", nuevo).execute()
-                    except Exception:
-                        privado.table("perfiles").update({"activo": False}).eq("id", nuevo).execute()
-                        st.error("Alta incompleta. Revisa la cuenta en Supabase antes de reintentar.")
-                        st.stop()
-                    st.session_state.mensaje_usuario = True
-                    st.rerun()
-            if usuarios:
-                st.markdown("### Editar usuario")
-                mapa = {u["id"]: u for u in usuarios}
-                elegido = st.selectbox("Seleccionar cuenta", list(mapa), format_func=lambda x: f'{mapa[x]["nombre"]} | {mapa[x].get("usuario")}')
-                u = mapa[elegido]
-                actuales = [a["sucursal_id"] for a in asignaciones if a["usuario_id"] == elegido and a["sucursal_id"] in mapa_sucursales]
-                with st.form(f"editar_usuario_{elegido}"):
-                    nombre = st.text_input("Nombre", value=u["nombre"])
-                    login = st.text_input("Usuario", value=u.get("usuario") or "")
-                    rol = st.selectbox("Rol", ["capturista", "administrador"], index=int(u["rol"] == "administrador"))
-                    activo = st.checkbox("Cuenta activa", value=u["activo"])
-                    sedes = st.multiselect("Sucursales", list(mapa_sucursales), default=actuales, format_func=mapa_sucursales.get)
-                    clave = st.text_input("Nueva contraseña (dejar vacío para conservar)", type="password")
-                    guardar = st.form_submit_button("Guardar usuario")
-                if guardar:
+    if es_maestro:
+        with tab1:
+            try:
+                privado = administrador_privado()
+                usuarios = consultar_tabla("perfiles")
+                asignaciones = privado.table("usuario_sucursales").select("*").execute().data
+                st.dataframe(pd.DataFrame([{
+                    "Nombre": u["nombre"], "Usuario": u.get("usuario"), "Rol": u["rol"],
+                    "Activo": u["activo"], "Sucursales": "Todas" if u["rol"] != "capturista" else ", ".join(mapa_sucursales.get(a["sucursal_id"], str(a["sucursal_id"])) for a in asignaciones if a["usuario_id"] == u["id"])
+                } for u in usuarios]), hide_index=True, use_container_width=True)
+                if st.session_state.pop("mensaje_usuario", False):
+                    st.success("Cambios guardados.")
+                st.markdown("### Nuevo usuario")
+                with st.form("alta_usuario", clear_on_submit=False):
+                    nombre = st.text_input("Nombre completo")
+                    login = st.text_input("Nombre de usuario")
+                    clave = st.text_input("Contraseña inicial (mínimo 12 caracteres)", type="password")
+                    rol = st.selectbox("Rol", ROLES, format_func=ETIQUETAS.get)
+                    sedes = st.multiselect("Sucursales (obligatorio para capturistas)", list(mapa_sucursales), format_func=mapa_sucursales.get)
+                    alta = st.form_submit_button("Crear usuario")
+                if alta:
                     login = login.strip().lower()
-                    if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or (clave and len(clave)<12) or (rol == "capturista" and not sedes):
-                        st.warning("Revisa los datos y la longitud de la contraseña (12 caracteres).")
-                    elif elegido == usuario_id and (not activo or rol != "administrador"):
-                        st.warning("No puedes desactivar ni quitar tu propio rol de administrador.")
-                    elif any(x["id"] != elegido and x.get("usuario") == login for x in usuarios):
-                        st.warning("El nombre de usuario ya existe.")
+                    if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or len(clave) < 12 or (rol == "capturista" and not sedes):
+                        st.warning("Completa los datos, utiliza un usuario sin espacios y una contraseña de al menos 12 caracteres.")
+                    elif any(u.get("usuario") == login for u in usuarios):
+                        st.warning("El usuario ya existe.")
                     else:
                         privado = administrador_privado()
-                        cambios = {}
-                        if clave: cambios["password"] = clave
-                        if cambios: privado.auth.admin.update_user_by_id(elegido, cambios)
-                        if elegido != usuario_id:
-                            privado.table("perfiles").update({"activo": False}).eq("id", elegido).execute()
-                        privado.table("usuario_sucursales").delete().eq("usuario_id", elegido).execute()
-                        if rol == "capturista" and sedes:
-                            privado.table("usuario_sucursales").insert([{"usuario_id": elegido, "sucursal_id": x} for x in sedes]).execute()
-                        privado.table("perfiles").update({"nombre": nombre.strip(), "usuario": login, "rol": rol, "activo": activo}).eq("id", elegido).execute()
+                        nuevo = privado.auth.admin.create_user({"email": f"{uuid.uuid4().hex}@casanova.example", "password": clave, "email_confirm": True}).user.id
+                        try:
+                            privado.table("perfiles").upsert({"id": nuevo, "nombre": nombre.strip(), "usuario": login, "rol": rol, "activo": False}).execute()
+                            if sedes and rol == "capturista":
+                                privado.table("usuario_sucursales").insert([{"usuario_id": nuevo, "sucursal_id": x} for x in sedes]).execute()
+                            privado.table("perfiles").update({"activo": True}).eq("id", nuevo).execute()
+                        except Exception:
+                            privado.table("perfiles").update({"activo": False}).eq("id", nuevo).execute()
+                            st.error("Alta incompleta. Revisa la cuenta en Supabase antes de reintentar.")
+                            st.stop()
                         st.session_state.mensaje_usuario = True
                         st.rerun()
-        except Exception as error:
-            codigo = getattr(error, "code", None)
-            estado = getattr(error, "status", None)
-            st.error("No se completó la operación de usuarios. Revisa Secrets y los datos antes de reintentar.")
-            st.caption(f"Diagnóstico: {type(error).__name__} | código: {codigo or 'no disponible'} | estado: {estado or 'no disponible'}")
+                if usuarios:
+                    st.markdown("### Editar usuario")
+                    mapa = {u["id"]: u for u in usuarios}
+                    elegido = st.selectbox("Seleccionar cuenta", list(mapa), format_func=lambda x: f'{mapa[x]["nombre"]} | {mapa[x].get("usuario")}')
+                    u = mapa[elegido]
+                    actuales = [a["sucursal_id"] for a in asignaciones if a["usuario_id"] == elegido and a["sucursal_id"] in mapa_sucursales]
+                    with st.form(f"editar_usuario_{elegido}"):
+                        nombre = st.text_input("Nombre", value=u["nombre"])
+                        login = st.text_input("Usuario", value=u.get("usuario") or "")
+                        rol = st.selectbox("Rol", ROLES, index=ROLES.index(u["rol"]), format_func=ETIQUETAS.get)
+                        activo = st.checkbox("Cuenta activa", value=u["activo"])
+                        sedes = st.multiselect("Sucursales", list(mapa_sucursales), default=actuales, format_func=mapa_sucursales.get)
+                        clave = st.text_input("Nueva contraseña (dejar vacío para conservar)", type="password")
+                        guardar = st.form_submit_button("Guardar usuario")
+                    if guardar:
+                        login = login.strip().lower()
+                        if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or (clave and len(clave)<12) or (rol == "capturista" and not sedes):
+                            st.warning("Revisa los datos y la longitud de la contraseña (12 caracteres).")
+                        elif elegido == usuario_id and (not activo or rol != "maestro"):
+                            st.warning("No puedes desactivar ni quitar tu propio rol de administrador.")
+                        elif any(x["id"] != elegido and x.get("usuario") == login for x in usuarios):
+                            st.warning("El nombre de usuario ya existe.")
+                        else:
+                            privado = administrador_privado()
+                            cambios = {}
+                            if clave: cambios["password"] = clave
+                            if cambios: privado.auth.admin.update_user_by_id(elegido, cambios)
+                            if elegido != usuario_id:
+                                privado.table("perfiles").update({"activo": False}).eq("id", elegido).execute()
+                            privado.table("usuario_sucursales").delete().eq("usuario_id", elegido).execute()
+                            if rol == "capturista" and sedes:
+                                privado.table("usuario_sucursales").insert([{"usuario_id": elegido, "sucursal_id": x} for x in sedes]).execute()
+                            privado.table("perfiles").update({"nombre": nombre.strip(), "usuario": login, "rol": rol, "activo": activo}).eq("id", elegido).execute()
+                            st.session_state.mensaje_usuario = True
+                            st.rerun()
+            except Exception as error:
+                codigo = getattr(error, "code", None)
+                estado = getattr(error, "status", None)
+                st.error("No se completó la operación de usuarios. Revisa Secrets y los datos antes de reintentar.")
+                st.caption(f"Diagnóstico: {type(error).__name__} | código: {codigo or 'no disponible'} | estado: {estado or 'no disponible'}")
 
     with tab2:
 
