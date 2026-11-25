@@ -1,3 +1,4 @@
+import uuid
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
@@ -1219,23 +1220,22 @@ elif modulo == "Administración" and es_admin:
             if st.session_state.pop("mensaje_usuario", False):
                 st.success("Cambios guardados.")
             st.markdown("### Nuevo usuario")
-            with st.form("alta_usuario", clear_on_submit=True):
+            with st.form("alta_usuario", clear_on_submit=False):
                 nombre = st.text_input("Nombre completo")
                 login = st.text_input("Nombre de usuario")
-                email = st.text_input("Correo electrónico real")
                 clave = st.text_input("Contraseña inicial (mínimo 12 caracteres)", type="password")
                 rol = st.selectbox("Rol", ["capturista", "administrador"])
                 sedes = st.multiselect("Sucursales (obligatorio para capturistas)", list(mapa_sucursales), format_func=mapa_sucursales.get)
                 alta = st.form_submit_button("Crear usuario")
             if alta:
                 login = login.strip().lower()
-                if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or "@" not in email or len(clave) < 12 or (rol == "capturista" and not sedes):
+                if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or len(clave) < 12 or (rol == "capturista" and not sedes):
                     st.warning("Completa los datos, utiliza un usuario sin espacios y una contraseña de al menos 12 caracteres.")
                 elif any(u.get("usuario") == login for u in usuarios):
                     st.warning("El usuario ya existe.")
                 else:
                     privado = administrador_privado()
-                    nuevo = privado.auth.admin.create_user({"email": email.strip().lower(), "password": clave, "email_confirm": True}).user.id
+                    nuevo = privado.auth.admin.create_user({"email": f"{uuid.uuid4().hex}@casanova.example", "password": clave, "email_confirm": True}).user.id
                     try:
                         privado.table("perfiles").upsert({"id": nuevo, "nombre": nombre.strip(), "usuario": login, "rol": rol, "activo": False}).execute()
                         if sedes and rol == "capturista":
@@ -1252,12 +1252,10 @@ elif modulo == "Administración" and es_admin:
                 mapa = {u["id"]: u for u in usuarios}
                 elegido = st.selectbox("Seleccionar cuenta", list(mapa), format_func=lambda x: f'{mapa[x]["nombre"]} | {mapa[x].get("usuario")}')
                 u = mapa[elegido]
-                correo_actual = privado.auth.admin.get_user_by_id(elegido).user.email
                 actuales = [a["sucursal_id"] for a in asignaciones if a["usuario_id"] == elegido and a["sucursal_id"] in mapa_sucursales]
                 with st.form(f"editar_usuario_{elegido}"):
                     nombre = st.text_input("Nombre", value=u["nombre"])
                     login = st.text_input("Usuario", value=u.get("usuario") or "")
-                    email = st.text_input("Correo", value=correo_actual or "")
                     rol = st.selectbox("Rol", ["capturista", "administrador"], index=int(u["rol"] == "administrador"))
                     activo = st.checkbox("Cuenta activa", value=u["activo"])
                     sedes = st.multiselect("Sucursales", list(mapa_sucursales), default=actuales, format_func=mapa_sucursales.get)
@@ -1265,7 +1263,7 @@ elif modulo == "Administración" and es_admin:
                     guardar = st.form_submit_button("Guardar usuario")
                 if guardar:
                     login = login.strip().lower()
-                    if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or "@" not in email or (clave and len(clave)<12) or (rol == "capturista" and not sedes):
+                    if not nombre.strip() or not re.fullmatch(r"[a-z0-9_.-]+", login) or (clave and len(clave)<12) or (rol == "capturista" and not sedes):
                         st.warning("Revisa los datos y la longitud de la contraseña (12 caracteres).")
                     elif elegido == usuario_id and (not activo or rol != "administrador"):
                         st.warning("No puedes desactivar ni quitar tu propio rol de administrador.")
@@ -1274,7 +1272,6 @@ elif modulo == "Administración" and es_admin:
                     else:
                         privado = administrador_privado()
                         cambios = {}
-                        if email.strip().lower() != correo_actual: cambios.update(email=email.strip().lower(), email_confirm=True)
                         if clave: cambios["password"] = clave
                         if cambios: privado.auth.admin.update_user_by_id(elegido, cambios)
                         if elegido != usuario_id:
@@ -1285,8 +1282,11 @@ elif modulo == "Administración" and es_admin:
                         privado.table("perfiles").update({"nombre": nombre.strip(), "usuario": login, "rol": rol, "activo": activo}).eq("id", elegido).execute()
                         st.session_state.mensaje_usuario = True
                         st.rerun()
-        except Exception:
-            st.error("No se completó la operación de usuarios. Verifica Secrets y los datos; si estabas guardando, revisa el estado de la cuenta antes de reintentar.")
+        except Exception as error:
+            codigo = getattr(error, "code", None)
+            estado = getattr(error, "status", None)
+            st.error("No se completó la operación de usuarios. Revisa Secrets y los datos antes de reintentar.")
+            st.caption(f"Diagnóstico: {type(error).__name__} | código: {codigo or 'no disponible'} | estado: {estado or 'no disponible'}")
 
     with tab2:
 
