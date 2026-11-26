@@ -82,6 +82,7 @@ button[kind="primary"] {
 [data-testid="stSidebar"] { background-color: #EEF2F8; }
 [data-testid="stMetric"] { border-top: 4px solid #FFB700 !important; }
 [data-testid="stToolbar"], #MainMenu, [data-testid="stDecoration"], footer, [data-testid="stSidebarCollapsedControl"] {display:none !important;}
+.stButton button p {font-size: 16px !important; font-weight: 700 !important;}
 .stButton button[kind="primary"] {background:#FFB700 !important;color:#213769 !important;}
 .block-container {padding-top:2rem;}
 </style>
@@ -938,7 +939,27 @@ elif modulo == "Dashboard":
         c.metric("Unidades completas", f"{completos:,}")
         d.metric("Unidades con pendientes (NO)", f"{pendientes:,}")
         st.caption("Última revisión global por serie, después filtrada por sucursal y fecha. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
+        pendientes_base = []
+        hoy = pd.Timestamp.now(tz="America/Mexico_City").tz_localize(None).normalize()
+        for _, unidad in ult.iterrows():
+            historial = historial_visible[historial_visible["serie"] == unidad["serie"]].sort_values(["Fecha de revisión", "id"], ascending=False)
+            for req in activos:
+                if estado_respuesta(lookup.get((unidad["id"], req["id"]))) != "NO":
+                    continue
+                inicio = unidad["Fecha de revisión"]
+                for _, anterior in historial.iterrows():
+                    if estado_respuesta(lookup.get((anterior["id"], req["id"]))) != "NO":
+                        break
+                    inicio = anterior["Fecha de revisión"]
+                pendientes_base.append({"id": unidad["id"], "Serie": unidad["serie"], "Placa": unidad["placa"], "Línea": unidad["linea"], "Modelo": unidad["modelo"], "Cliente": unidad["nombre_cliente"], "Unidad de negocio": unidad["unidad_negocio"], "Almacén": unidad["almacen"], "Sucursal": unidad["Sucursal"], "Responsable": unidad["usuario"], "Fecha de revisión": unidad["Fecha de revisión"], "Pendiente": req["requisito"], "Detectado desde (historial visible)": inicio, "Días de pendiente": (hoy-inicio.normalize()).days if pd.notna(inicio) else None})
+        rangos = ["0 a 7 días", "8 a 15 días", "16 a 30 días", "Más de 30 días"]
+        for fila in pendientes_base:
+            dias = fila["Días de pendiente"]
+            fila["Rango"] = (rangos[0] if dias <= 7 else rangos[1] if dias <= 15 else rangos[2] if dias <= 30 else rangos[3]) if pd.notna(dias) else "Sin fecha"
         def aplicar_seleccion(tipo=None, valores=()):
+            if tipo and st.session_state.get("dash_filtro") == (tipo, tuple(valores)):
+                tipo = None
+            st.session_state.pop("unidad_detalle", None)
             st.session_state["dash_doc"] = "Todos"
             st.session_state["subir_detalle"] = bool(tipo)
             st.session_state["dash_resultado"] = "Todas"
@@ -961,6 +982,8 @@ elif modulo == "Dashboard":
                 detalle=detalle[detalle["id"].isin(ids)]
             elif tipo=="general":
                 detalle=detalle[detalle["Resultado"]==valores[0]]
+            elif tipo=="antiguedad":
+                detalle=detalle[detalle["id"].isin([f["id"] for f in pendientes_base if f["Rango"]==valores[0]])]
             else:
                 detalle=detalle[(detalle["Sucursal"]==valores[0]) & (detalle["Resultado"]==valores[1])]
             st.caption("Selección: " + " · ".join(valores))
@@ -988,24 +1011,14 @@ elif modulo == "Dashboard":
                 st.button("Abrir checklist", on_click=abrir_checklist)
         if not concentrado.empty:
             st.download_button("Descargar detalle Excel",excel_concentrado(concentrado),"Dashboard_Casanova.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        pendientes_excel = []
-        hoy = pd.Timestamp.now(tz="America/Mexico_City").tz_localize(None).normalize()
-        for _, unidad in detalle.iterrows():
-            historial = historial_visible[historial_visible["serie"] == unidad["serie"]].sort_values(["Fecha de revisión", "id"], ascending=False)
-            for req in activos:
-                if estado_respuesta(lookup.get((unidad["id"], req["id"]))) != "NO":
-                    continue
-                inicio = unidad["Fecha de revisión"]
-                for _, anterior in historial.iterrows():
-                    if estado_respuesta(lookup.get((anterior["id"], req["id"]))) != "NO":
-                        break
-                    inicio = anterior["Fecha de revisión"]
-                pendientes_excel.append({"Serie": unidad["serie"], "Placa": unidad["placa"], "Línea": unidad["linea"], "Modelo": unidad["modelo"], "Cliente": unidad["nombre_cliente"], "Unidad de negocio": unidad["unidad_negocio"], "Almacén": unidad["almacen"], "Sucursal": unidad["Sucursal"], "Responsable": unidad["usuario"], "Fecha de revisión": unidad["Fecha de revisión"], "Pendiente": req["requisito"], "Detectado desde (historial visible)": inicio, "Días de pendiente": (hoy-inicio.normalize()).days if pd.notna(inicio) else None})
+        pendientes_excel = [{k:v for k,v in fila.items() if k != "id"} for fila in pendientes_base if fila["id"] in set(detalle["id"]) and (not filtro or filtro[0] != "antiguedad" or fila["Rango"] == filtro[1][0]) and (not filtro or filtro[0] != "documento" or fila["Pendiente"] == filtro[1][0])]
         if pendientes_excel:
+            if filtro and filtro[0] in ("antiguedad", "documento"):
+                st.dataframe(pd.DataFrame(pendientes_excel)[["Serie", "Placa", "Pendiente", "Días de pendiente"]], hide_index=True, use_container_width=True)
             st.download_button("Descargar pendientes Excel", excel_concentrado(pd.DataFrame(pendientes_excel)), "Pendientes_Casanova.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.divider()
         def estilo(fig, altura=330):
-            fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
+            fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(size=16, color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
             return fig
         def seleccion(fig, key, destino):
             def al_seleccionar():
@@ -1015,6 +1028,8 @@ elif modulo == "Dashboard":
                     datos = puntos[-1].get("customdata")
                     if datos is not None and len(datos):
                         aplicar_seleccion(destino, datos)
+                elif st.session_state.get("dash_filtro", (None,))[0] == destino:
+                    aplicar_seleccion()
             return st.plotly_chart(estilo(fig), theme=None, use_container_width=True,
                                    key=key, on_select=al_seleccionar, selection_mode="points")
         a,b = st.columns(2)
@@ -1049,45 +1064,46 @@ elif modulo == "Dashboard":
                     pct=f"{si/(n-na):.0%}" if n>na else "N/A"
                     st.markdown(f"**{nombre}**")
                     fig=go.Figure(go.Pie(labels=["SÍ","NO","NO APLICA","Histórico"],values=[si,no,na,hist],hole=.72,marker_colors=[colores["SÍ"],colores["NO"],colores["NO APLICA"],colores["SIN REVISAR"]],textinfo="none",sort=False))
-                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=27)
+                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=38)
                     fig.update_layout(showlegend=False)
                     fig.update_traces(marker=dict(line=dict(color="#FFFFFF", width=2)))
-                    st.plotly_chart(estilo(fig,190),theme=None,use_container_width=True,key=f"doc_{r['id']}")
-                    st.caption(f"SÍ: {si:,}  |  NO: {no:,}  |  N/A: {na:,}" + (f"  |  Histórico: {hist:,}" if hist else ""))
+                    st.plotly_chart(estilo(fig,260),theme=None,use_container_width=True,key=f"doc_{r['id']}")
+                    if hist: st.caption(f"Histórico: {hist:,}")
                     botones = st.columns(3)
                     for boton, estado, cantidad in zip(botones, ["SÍ", "NO", "NO APLICA"], [si,no,na]):
-                        boton.button(f"{estado}: {cantidad}", key=f"doc_sel_{r['id']}_{estado}",
+                        boton.button(f"{estado}: {cantidad}", use_container_width=True, key=f"doc_sel_{r['id']}_{estado}",
                                      on_click=aplicar_seleccion, args=("documento", (nombre,estado)), type="primary" if filtro == ("documento", (nombre,estado)) else "secondary")
         st.markdown("### Comparativo por sucursal")
         resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
         fig=px.bar(resumen,y="Sucursal",x="Unidades",orientation="h",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
-        fig.update_traces(textposition="inside")
+        fig.update_traces(textposition="inside", textfont=dict(size=20), insidetextanchor="middle")
+        for tr in fig.data:
+            tr.textfont.color = "white" if tr.name == "Completo" else "#213769"
+        fig.update_layout(uniformtext_minsize=16, uniformtext_mode="show")
         fig.update_layout(barmode="stack", legend=dict(orientation="h", y=-.2))
-        fig.update_xaxes(title=None, tickformat="d")
-        fig.update_yaxes(title=None, automargin=True)
+        fig.update_xaxes(title=None, tickformat="d", dtick=1, tickfont=dict(size=15))
+        fig.update_yaxes(title=None, automargin=True, tickfont=dict(size=16))
         seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal")
         with st.expander("Principales pendientes documentales"):
-            ranking = largo[largo["Respuesta"].eq("NO")].groupby("Requisito").size().sort_values().reset_index(name="Pendientes")
+            ranking = largo[largo["Respuesta"].eq("NO")].groupby("Requisito").size().sort_values(ascending=False)
             if ranking.empty:
                 st.info("Sin pendientes documentales.")
-            else:
-                fig_p = px.bar(ranking, y="Requisito", x="Pendientes", orientation="h", text="Pendientes", color_discrete_sequence=["#FFB700"])
-                fig_p.update_yaxes(title=None, automargin=True)
-                fig_p.update_xaxes(title=None, tickformat="d")
-                st.plotly_chart(estilo(fig_p), use_container_width=True)
+            for nombre, cantidad in ranking.items():
+                a,b = st.columns([4,2], vertical_alignment="center")
+                a.markdown(f"**{nombre} · {cantidad}**")
+                a.progress(float(cantidad / ranking.max()))
+                b.button("Ver unidades", key=f"ranking_{nombre}", use_container_width=True, on_click=aplicar_seleccion, args=("documento", (nombre,"NO")), type="primary" if filtro == ("documento", (nombre,"NO")) else "secondary")
         with st.expander("Antigüedad de pendientes"):
-            if pendientes_excel:
-                edades = pd.DataFrame(pendientes_excel)
-                edades["Rango"] = pd.cut(edades["Días de pendiente"], [-1,7,15,30,float("inf")], labels=["0 a 7 días","8 a 15 días","16 a 30 días","Más de 30 días"])
-                st.caption("Antigüedad calculada con el historial visible y los filtros del detalle.")
-                st.dataframe(edades.groupby("Rango", observed=False).size().reset_index(name="Pendientes"), hide_index=True)
-            else:
-                st.info("Sin pendientes en el detalle seleccionado.")
-        with st.expander("Consultar detalle por sucursal"):
-            for fila in resumen.itertuples(index=False):
-                st.button(f"{fila.Sucursal} · {fila.Resultado}: {fila.Unidades}",
-                          key=f"suc_det_{fila.Sucursal}_{fila.Resultado}",
-                          on_click=aplicar_seleccion, args=("sucursal", (fila.Sucursal, fila.Resultado)))
+            st.caption("Pendientes documentales, no unidades únicas. Antigüedad según historial autorizado visible.")
+            cols = st.columns(4)
+            for col, rango in zip(cols, rangos):
+                filas = [f for f in pendientes_base if f["Rango"] == rango]
+                with col:
+                    st.metric(rango, len(filas))
+                    st.caption(f"{len({f['id'] for f in filas})} unidades")
+                    st.button("Ver unidades", key=f"edad_{rango}", use_container_width=True, disabled=not filas, on_click=aplicar_seleccion, args=("antiguedad", (rango,)), type="primary" if filtro == ("antiguedad", (rango,)) else "secondary")
+            sin_fecha = sum(f["Rango"] == "Sin fecha" for f in pendientes_base)
+            if sin_fecha: st.caption(f"Pendientes sin fecha: {sin_fecha}")
     except Exception:
         st.error("No fue posible cargar el dashboard. Verifica la conexión y las versiones de Streamlit y Plotly.")
 
