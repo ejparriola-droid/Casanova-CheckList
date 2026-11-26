@@ -271,18 +271,29 @@ def fecha_asig(valor):
     return f.strftime("%d/%m/%Y %H:%M")
 
 
+def dias_asig(f):
+    inicio = f.get("fecha_creacion") or f.get("fecha_registro")
+    fin = f.get("fecha_conclusion") if f.get("situacion") == "Concluido" else pd.Timestamp.now(tz="America/Mexico_City")
+    if not inicio or fin is None:
+        return None
+    def local(v):
+        t = pd.Timestamp(v)
+        return t.tz_convert("America/Mexico_City") if t.tzinfo else t.tz_localize("America/Mexico_City")
+    return max(0, (local(fin).date()-local(inicio).date()).days)
+
+
 def tabla_asig(filas, nombres):
     return pd.DataFrame([{"Folio": f["folio"], "Situación": f.get("situacion"),
         "Trámites": ", ".join(f.get("tramites") or []), "Conceptos Excel": f.get("conceptos"),
-        "Origen": f.get("origen"), "Registrado por": nombres.get(f.get("registrado_por"), "Sin registro / no visible"),
+        "Fecha de creación": fecha_asig(f.get("fecha_creacion")), "Días abiertos": dias_asig(f), "Origen": f.get("origen"), "Registrado por": nombres.get(f.get("registrado_por"), "Sin registro / no visible"),
         "Registro": fecha_asig(f.get("fecha_registro")), "Conclusión": fecha_asig(f.get("fecha_conclusion")),
         "Concluido por": nombres.get(f.get("concluido_por"), "Sin registro / no visible"),
-        "Estado Excel": f.get("estado_atencion"), "Observaciones": f.get("observaciones")} for f in filas])
+        "Estado Excel": f.get("estado_atencion"), "Observaciones": f.get("observaciones")} for f in filas]).fillna("—").replace("", "—")
 
 
 def panel_asig(serie, editable, prefijo):
     filas = folios_serie(serie)
-    nombres = {p["id"]: p["nombre"] for p in consultar_tabla("perfiles")}
+    nombres = {p["id"]: p["nombre"] for p in db.rpc("responsables_asig", {"p_serie": serie}).execute().data}
     a,b = st.columns(2)
     a.metric("ASIG abiertos", sum(f.get("situacion")=="Abierto" for f in filas))
     b.metric("ASIG concluidos", sum(f.get("situacion")=="Concluido" for f in filas))
@@ -322,7 +333,7 @@ def panel_asig(serie, editable, prefijo):
                 st.rerun()
             eventos = db.table("historial_asig").select("movimiento,nombre_usuario,fecha_movimiento").eq("asig_id",elegido["id"]).order("id",desc=True).limit(100).execute().data or []
             if eventos:
-                st.dataframe(pd.DataFrame(eventos),hide_index=True,use_container_width=True)
+                st.dataframe(pd.DataFrame(eventos).assign(fecha_movimiento=lambda d: d["fecha_movimiento"].map(fecha_asig)).rename(columns={"movimiento":"Movimiento","nombre_usuario":"Responsable","fecha_movimiento":"Fecha y hora"}).fillna("—"),hide_index=True,use_container_width=True)
 
 
 def estado_respuesta(r):
@@ -363,6 +374,14 @@ def construir_concentrado(df, respuestas, requisitos):
                 campo += f" ({req['id']})"
             base[campo] = pd.to_datetime([r.get("fecha_vencimiento") if r else None for r in filas], errors="coerce")
     return base
+
+
+def config_tabla(df):
+    config = {col: st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm" if col == "Fecha de revisión" else "DD/MM/YYYY") for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])}
+    for col in ("Serie", "Placa"):
+        if col in df.columns:
+            config[col] = st.column_config.TextColumn(pinned=True)
+    return config
 
 
 def excel_concentrado(df):
@@ -908,7 +927,7 @@ elif modulo == "Historial":
             st.caption("ASIG históricos: una celda vacía puede corresponder a una revisión anterior a la implementación o sin folios.")
             st.caption(f"{len(concentrado):,} revisiones encontradas")
             st.dataframe(concentrado, hide_index=True, use_container_width=True,
-                         column_config={col: st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm" if col == "Fecha de revisión" else "DD/MM/YYYY") for col in concentrado.columns if pd.api.types.is_datetime64_any_dtype(concentrado[col])})
+                         column_config=config_tabla(concentrado))
             if not concentrado.empty:
                 st.download_button("📥 Descargar concentrado Excel", data=excel_concentrado(concentrado), file_name="Casanova_Checklists.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     except Exception:
@@ -1052,9 +1071,17 @@ elif modulo == "Dashboard":
         st.metric("Unidades seleccionadas",len(detalle))
         concentrado=construir_concentrado(detalle,respuestas,requisitos)
         concentrado["Situación actual"] = detalle["Resultado"].to_numpy()
-        st.dataframe(concentrado,hide_index=True,use_container_width=True)
+        for etiqueta, filas_asig in [("ASIG abiertos actuales", abiertos_asig), ("ASIG concluidos actuales", concluidos_asig)]:
+            por_serie = {}
+            for f in filas_asig:
+                por_serie.setdefault(f["serie"], []).append(f["folio"])
+            concentrado[etiqueta] = concentrado["Serie"].map(lambda serie: " | ".join(por_serie.get(serie, [])))
+        st.dataframe(concentrado,hide_index=True,use_container_width=True,column_config=config_tabla(concentrado))
         if not concentrado.empty:
-            serie_elegida = st.selectbox("Unidad para consultar", detalle["serie"].tolist(), key="unidad_detalle")
+            series_detalle = detalle["serie"].tolist()
+            if st.session_state.get("unidad_detalle") not in series_detalle:
+                st.session_state.pop("unidad_detalle", None)
+            serie_elegida = st.selectbox("Unidad para consultar", series_detalle, key="unidad_detalle")
             st.code(serie_elegida, language=None)
             if puede_capturar:
                 def abrir_checklist():
@@ -1102,19 +1129,19 @@ elif modulo == "Dashboard":
             st.markdown("**Avance acumulado de unidades**")
             primera = historial_visible[historial_visible["serie"].isin(ult["serie"])].dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
             avance = primera.groupby(primera["Fecha de revisión"].dt.normalize()).size().cumsum().rename("Unidades").reset_index()
-            fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#004876"])
-            fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades", line=dict(width=3), marker=dict(size=7), fillcolor="rgba(0,72,118,0.13)")
-            fig.update_xaxes(title=None, tickformat="%d/%m", nticks=6, tickfont=dict(size=14), showgrid=False)
-            if len(avance) == 1:
-                dia = avance["Fecha de revisión"].iloc[0]
-                fig.update_xaxes(tickmode="array", tickvals=[dia], ticktext=[dia.strftime("%d/%m")], range=[dia-pd.Timedelta(days=1), dia+pd.Timedelta(days=1)])
-                fig.update_traces(marker=dict(size=12), mode="markers+text", text=avance["Unidades"], textposition="top center")
-                fig.update_yaxes(range=[0, max(1, int(avance["Unidades"].iloc[0])+1)])
-            fig.update_yaxes(title=None, tickformat="d", rangemode="tozero", dtick=max(1, int(avance["Unidades"].max()/5)) if not avance.empty else 1)
-            st.plotly_chart(estilo(fig), theme=None, use_container_width=True, config={"displayModeBar":False})
+            fig = go.Figure()
+            if not avance.empty:
+                fechas = avance["Fecha de revisión"].dt.strftime("%d/%m/%Y").tolist()
+                cantidades = avance["Unidades"].tolist()
+                fig.add_trace(go.Scatter(x=fechas, y=cantidades, mode="markers+text" if len(fechas)==1 else "lines+markers", text=cantidades, textposition="top center", marker=dict(size=10,color="#004876"), line=dict(color="#004876",width=3), fill="tozeroy" if len(fechas)>1 else None, fillcolor="rgba(0,72,118,0.13)", hovertemplate="%{x}: %{y} unidades<extra></extra>"))
+                fig.update_yaxes(range=[0,max(cantidades)*1.2+1],dtick=max(1,int(max(cantidades)/5)),tickformat="d")
+                fig.update_xaxes(type="category",nticks=5,showgrid=False,tickfont=dict(size=12))
+            fig = estilo(fig,230)
+            fig.update_layout(margin=dict(l=38,r=20,t=25,b=48))
+            st.plotly_chart(fig,theme=None,use_container_width=True,config={"displayModeBar":False})
         st.markdown("### Seguimiento ASIG")
         cols = st.columns(3)
-        for col, etiqueta, valor, cantidad in zip(cols,["ASIG abiertos","ASIG concluidos","Pendientes sin vínculo explícito"],["Abiertos","Concluidos","Sin vínculo"],[len(abiertos_asig),len(concluidos_asig),len(sin_asig)]):
+        for col, etiqueta, valor, cantidad in zip(cols,["ASIG abiertos","ASIG concluidos","Pendientes sin ASIG vinculado"],["Abiertos","Concluidos","Sin vínculo"],[len(abiertos_asig),len(concluidos_asig),len(sin_asig)]):
             col.metric(etiqueta,cantidad)
             col.button("Ver unidades",key="asig_dash_"+valor,on_click=aplicar_seleccion,args=("asig",(valor,)),type="primary" if filtro==("asig",(valor,)) else "secondary",use_container_width=True)
         st.caption("Folios actuales de las unidades filtradas. Los conceptos libres del Excel no se consideran vínculos documentales confirmados.")
