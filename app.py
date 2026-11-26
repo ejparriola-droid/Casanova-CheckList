@@ -252,6 +252,79 @@ def cargar_base():
     return df
 
 
+def folios_serie(serie):
+    filas = []
+    for inicio in range(0, 1000000, 500):
+        bloque = db.table("atenciones_vehiculo").select("*").eq("serie", serie).order("id").range(inicio, inicio+499).execute().data or []
+        filas.extend(bloque)
+        if len(bloque) < 500:
+            break
+    return filas
+
+
+def fecha_asig(valor):
+    if not valor:
+        return "Sin registro"
+    f = pd.Timestamp(valor)
+    if f.tzinfo is not None:
+        f = f.tz_convert("America/Mexico_City")
+    return f.strftime("%d/%m/%Y %H:%M")
+
+
+def tabla_asig(filas, nombres):
+    return pd.DataFrame([{"Folio": f["folio"], "Situación": f.get("situacion"),
+        "Trámites": ", ".join(f.get("tramites") or []), "Conceptos Excel": f.get("conceptos"),
+        "Origen": f.get("origen"), "Registrado por": nombres.get(f.get("registrado_por"), "Sin registro / no visible"),
+        "Registro": fecha_asig(f.get("fecha_registro")), "Conclusión": fecha_asig(f.get("fecha_conclusion")),
+        "Concluido por": nombres.get(f.get("concluido_por"), "Sin registro / no visible"),
+        "Estado Excel": f.get("estado_atencion"), "Observaciones": f.get("observaciones")} for f in filas])
+
+
+def panel_asig(serie, editable, prefijo):
+    filas = folios_serie(serie)
+    nombres = {p["id"]: p["nombre"] for p in consultar_tabla("perfiles")}
+    a,b = st.columns(2)
+    a.metric("ASIG abiertos", sum(f.get("situacion")=="Abierto" for f in filas))
+    b.metric("ASIG concluidos", sum(f.get("situacion")=="Concluido" for f in filas))
+    if filas:
+        st.dataframe(tabla_asig(filas,nombres), hide_index=True, use_container_width=True)
+    if not editable:
+        return
+    reqs = db.table("checklist_requisitos").select("requisito").eq("activo",True).order("orden").execute().data or []
+    opciones = list(dict.fromkeys(r["requisito"] for r in reqs))
+    with st.expander("+ Agregar ASIG"):
+        with st.form(prefijo+"_alta_"+serie):
+            folio = st.text_input("Folio ASIG").strip().upper()
+            tramites = st.multiselect("Trámites solicitados", opciones)
+            otro = st.text_input("Otro trámite (opcional)").strip()
+            situacion = st.radio("Situación", ["Abierto","Concluido"], horizontal=True)
+            obs = st.text_area("Observaciones (opcional)")
+            guardar = st.form_submit_button("Guardar ASIG")
+        if guardar:
+            if not re.fullmatch(r"ASIG[A-Z0-9]+",folio) or not (tramites or otro):
+                st.warning("Indica un folio ASIG válido y al menos un trámite.")
+            elif any(f["folio"]==folio for f in filas):
+                st.warning("El folio ya existe para esta unidad. Utiliza la opción de seguimiento.")
+            else:
+                db.table("atenciones_vehiculo").insert({"serie":serie,"folio":folio,"origen":"Manual","estado_atencion":"Registro manual","situacion":situacion,"tramites":tramites+([otro] if otro else []),"observaciones":obs}).execute()
+                st.rerun()
+    if filas:
+        with st.expander("Seguimiento e historial ASIG"):
+            elegido = st.selectbox("Folio", filas, format_func=lambda f: f["folio"], key=prefijo+"_folio_"+serie)
+            with st.form(prefijo+"_seguimiento_"+serie+str(elegido["id"])):
+                actuales = elegido.get("tramites") or []
+                adicionales = st.multiselect("Agregar trámites", [x for x in opciones if x not in actuales])
+                otro = st.text_input("Otro trámite adicional").strip()
+                situacion = st.radio("Situación", ["Abierto","Concluido"], index=int(elegido.get("situacion")=="Concluido"), horizontal=True)
+                guardar = st.form_submit_button("Guardar seguimiento")
+            if guardar:
+                db.table("atenciones_vehiculo").update({"situacion":situacion,"tramites":list(dict.fromkeys(actuales+adicionales+([otro] if otro else [])))}).eq("id",elegido["id"]).execute()
+                st.rerun()
+            eventos = db.table("historial_asig").select("movimiento,nombre_usuario,fecha_movimiento").eq("asig_id",elegido["id"]).order("id",desc=True).limit(100).execute().data or []
+            if eventos:
+                st.dataframe(pd.DataFrame(eventos),hide_index=True,use_container_width=True)
+
+
 def estado_respuesta(r):
     if r is None:
         return "SIN REGISTRO"
@@ -483,7 +556,7 @@ mapa_sucursales = {
 
 opciones = (["Capturar checklist"] if puede_capturar else []) + ["Historial", "Dashboard", "Mi contraseña"]
 if consulta_general:
-    opciones.append("Carga de ASIG")
+    opciones.extend(["Gestión ASIG", "Carga de ASIG"])
 if es_maestro:
     opciones.append("Administración")
 if st.session_state.get("modulo") not in opciones:
@@ -609,55 +682,10 @@ if modulo == "Capturar checklist" and puede_capturar:
 
         st.divider()
         st.subheader("📂 Folios ASIG")
-
         try:
-
-            folios = []
-            inicio = 0
-            while True:
-                bloque = (
-                    db.table("atenciones_vehiculo")
-                    .select("folio,conceptos,estado_atencion,fecha_creacion")
-                    .eq("serie", serie)
-                    .order("id")
-                    .range(inicio, inicio + 499)
-                    .execute().data or []
-                )
-                folios.extend(bloque)
-                if len(bloque) < 500:
-                    break
-                inicio += 500
-
-            permitidos = {normalizar_texto(e) for e in ESTADOS_PERMITIDOS}
-            folios = [f for f in folios if normalizar_texto(
-                f["estado_atencion"]) in permitidos]
-
-            if folios:
-                tabla = pd.DataFrame(folios)
-                fechas = pd.to_datetime(
-                    tabla["fecha_creacion"], format="mixed", errors="coerce"
-                )
-                hoy = pd.Timestamp.now(tz="America/Mexico_City").tz_localize(None).normalize()
-                tabla["dias"] = (hoy - fechas.dt.normalize()).dt.days.astype("Int64")
-                tabla["conceptos"] = tabla["conceptos"].apply(mostrar)
-                tabla["fecha_creacion"] = fechas.dt.strftime("%d/%m/%Y %H:%M").fillna("Sin información")
-                tabla = tabla.sort_values("dias", ascending=False, na_position="last")
-                tabla = tabla.rename(columns={
-                    "folio": "Folio",
-                    "conceptos": "Conceptos",
-                    "estado_atencion": "Estado de atención",
-                    "fecha_creacion": "Fecha de creación",
-                    "dias": "Días desde creación"
-                })
-                st.metric("Folios ASIG", len(tabla))
-                st.dataframe(tabla[["Folio", "Conceptos", "Estado de atención",
-                    "Fecha de creación", "Días desde creación"]],
-                    hide_index=True, use_container_width=True)
-            else:
-                st.info("Sin folios ASIG visibles.")
-
+            panel_asig(serie, consulta_general, "captura")
         except Exception:
-            st.warning("No fue posible consultar los folios.")
+            st.warning("No fue posible consultar o guardar los ASIG.")
 
         # =============================
         # CHECKLIST DINÁMICO
@@ -871,6 +899,13 @@ elif modulo == "Historial":
             if hasta:
                 df = df[df["Fecha de revisión"] < pd.Timestamp(hasta) + pd.Timedelta(days=1)]
             concentrado = construir_concentrado(df, respuestas, requisitos)
+            snapshots = consultar_tabla("checklist_asig")
+            por_revision = {}
+            for f in snapshots:
+                por_revision.setdefault(f["revision_id"], []).append(f)
+            concentrado["ASIG al guardar"] = [" | ".join(f["folio"]+" ("+f["situacion"]+")" for f in por_revision.get(i, [])) for i in concentrado["ID revisión"]]
+            concentrado["Trámites ASIG al guardar"] = [" | ".join(f["folio"]+": "+(", ".join(f["datos_asig"].get("tramites") or []) or f["datos_asig"].get("conceptos") or "Sin detalle") for f in por_revision.get(i, [])) for i in concentrado["ID revisión"]]
+            st.caption("ASIG históricos: una celda vacía puede corresponder a una revisión anterior a la implementación o sin folios.")
             st.caption(f"{len(concentrado):,} revisiones encontradas")
             st.dataframe(concentrado, hide_index=True, use_container_width=True,
                          column_config={col: st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm" if col == "Fecha de revisión" else "DD/MM/YYYY") for col in concentrado.columns if pd.api.types.is_datetime64_any_dtype(concentrado[col])})
@@ -957,6 +992,20 @@ elif modulo == "Dashboard":
         for fila in pendientes_base:
             dias = fila["Días de pendiente"]
             fila["Rango"] = (rangos[0] if dias <= 7 else rangos[1] if dias <= 15 else rangos[2] if dias <= 30 else rangos[3]) if pd.notna(dias) else "Sin fecha"
+        asig_actual = []
+        series_visibles = ult["serie"].unique().tolist()
+        for inicio_asig in range(0, len(series_visibles), 100):
+            lote = series_visibles[inicio_asig:inicio_asig+100]
+            offset_asig = 0
+            while True:
+                bloque = db.table("atenciones_vehiculo").select("id,serie,folio,situacion,tramites").in_("serie",lote).order("id").range(offset_asig,offset_asig+499).execute().data or []
+                asig_actual.extend(bloque)
+                if len(bloque)<500: break
+                offset_asig += 500
+        abiertos_asig = [f for f in asig_actual if f.get("situacion")=="Abierto"]
+        concluidos_asig = [f for f in asig_actual if f.get("situacion")=="Concluido"]
+        asociaciones = {(f["serie"],normalizar_texto(t)) for f in abiertos_asig for t in (f.get("tramites") or [])}
+        sin_asig = [f for f in pendientes_base if (f["Serie"],normalizar_texto(f["Pendiente"])) not in asociaciones]
         def aplicar_seleccion(tipo=None, valores=()):
             if tipo and st.session_state.get("dash_filtro") == (tipo, tuple(valores)):
                 tipo = None
@@ -983,6 +1032,9 @@ elif modulo == "Dashboard":
                 detalle=detalle[detalle["id"].isin(ids)]
             elif tipo=="general":
                 detalle=detalle[detalle["Resultado"]==valores[0]]
+            elif tipo=="asig":
+                series_asig = {f["serie"] for f in (abiertos_asig if valores[0]=="Abiertos" else concluidos_asig)} if valores[0]!="Sin vínculo" else {f["Serie"] for f in sin_asig}
+                detalle=detalle[detalle["serie"].isin(series_asig)]
             elif tipo=="antiguedad":
                 detalle=detalle[detalle["id"].isin([f["id"] for f in pendientes_base if f["Rango"]==valores[0]])]
             else:
@@ -1060,6 +1112,12 @@ elif modulo == "Dashboard":
                 fig.update_yaxes(range=[0, max(1, int(avance["Unidades"].iloc[0])+1)])
             fig.update_yaxes(title=None, tickformat="d", rangemode="tozero", dtick=max(1, int(avance["Unidades"].max()/5)) if not avance.empty else 1)
             st.plotly_chart(estilo(fig), theme=None, use_container_width=True, config={"displayModeBar":False})
+        st.markdown("### Seguimiento ASIG")
+        cols = st.columns(3)
+        for col, etiqueta, valor, cantidad in zip(cols,["ASIG abiertos","ASIG concluidos","Pendientes sin vínculo explícito"],["Abiertos","Concluidos","Sin vínculo"],[len(abiertos_asig),len(concluidos_asig),len(sin_asig)]):
+            col.metric(etiqueta,cantidad)
+            col.button("Ver unidades",key="asig_dash_"+valor,on_click=aplicar_seleccion,args=("asig",(valor,)),type="primary" if filtro==("asig",(valor,)) else "secondary",use_container_width=True)
+        st.caption("Folios actuales de las unidades filtradas. Los conceptos libres del Excel no se consideran vínculos documentales confirmados.")
         st.markdown("### Cumplimiento por documento")
         st.caption("Pulsa los botones debajo de cada dona o selecciona una barra para actualizar el detalle superior.")
         for inicio in range(0,len(activos),4):
@@ -1121,6 +1179,21 @@ elif modulo == "Dashboard":
 # =====================================
 # CARGA DE ASIG
 # =====================================
+
+elif modulo == "Gestión ASIG" and consulta_general:
+    st.subheader("Gestión de ASIG")
+    try:
+        base = cargar_base()
+        texto = normalizar_serie(st.text_input("Serie completa o últimos 9 caracteres", key="gestion_asig_busqueda"))
+        if len(texto) >= 9:
+            encontrados = base[base["Serie"].str.endswith(texto) if len(texto)==9 else base["Serie"].eq(texto)]
+            if encontrados.empty:
+                st.warning("Unidad no encontrada.")
+            else:
+                serie = st.selectbox("Unidad", encontrados["Serie"].unique().tolist())
+                panel_asig(serie, True, "gestion")
+    except Exception:
+        st.error("No fue posible consultar o guardar los ASIG.")
 
 elif modulo == "Carga de ASIG" and consulta_general:
 
@@ -1224,7 +1297,15 @@ elif modulo == "Carga de ASIG" and consulta_general:
 
             if st.button("💾 Actualizar folios en Supabase"):
 
+                abiertos = {normalizar_texto(e) for e in ESTADOS_PERMITIDOS}
+                cerrados = {normalizar_texto(e) for e in ["Orden de Servicio Cerrada por el gestor", "Orden de Servicio Cancelada"]}
+                desconocidos = df[~df["estado_atencion"].map(normalizar_texto).isin(abiertos | cerrados)]
+                if not desconocidos.empty:
+                    st.error("Estados desconocidos: " + ", ".join(desconocidos["estado_atencion"].unique()))
+                    st.stop()
                 registros = df.to_dict("records")
+                for r in registros:
+                    r["situacion"] = "Abierto" if normalizar_texto(r["estado_atencion"]) in abiertos else "Concluido"
 
                 for r in registros:
                     r["fecha_actualizacion"] = (
@@ -1245,7 +1326,7 @@ elif modulo == "Carga de ASIG" and consulta_general:
                         "atenciones_vehiculo"
                     ).upsert(
                         bloque,
-                        on_conflict="serie,folio"
+                        on_conflict="serie,folio", default_to_null=False
                     ).execute()
 
                     progreso.progress(
