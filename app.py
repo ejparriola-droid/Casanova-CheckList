@@ -263,7 +263,7 @@ def folios_serie(serie):
 
 
 def fecha_asig(valor):
-    if not valor:
+    if valor is None or pd.isna(valor) or valor == "":
         return "Sin registro"
     f = pd.Timestamp(valor)
     if f.tzinfo is not None:
@@ -304,7 +304,8 @@ def panel_asig(serie, editable, prefijo):
     reqs = db.table("checklist_requisitos").select("requisito").eq("activo",True).order("orden").execute().data or []
     opciones = list(dict.fromkeys(r["requisito"] for r in reqs))
     with st.expander("+ Agregar ASIG"):
-        with st.form(prefijo+"_alta_"+serie):
+        alta_key = prefijo+"_alta_"+serie
+        with st.form(alta_key+str(st.session_state.get(alta_key+"_version", 0))):
             folio = st.text_input("Folio ASIG").strip().upper()
             tramites = st.multiselect("Trámites solicitados", opciones)
             otro = st.text_input("Otro trámite (opcional)").strip()
@@ -318,6 +319,7 @@ def panel_asig(serie, editable, prefijo):
                 st.warning("El folio ya existe para esta unidad. Utiliza la opción de seguimiento.")
             else:
                 db.table("atenciones_vehiculo").insert({"serie":serie,"folio":folio,"origen":"Manual","fecha_creacion":pd.Timestamp.now(tz="America/Mexico_City").tz_localize(None).isoformat(),"estado_atencion":"Registro manual","situacion":situacion,"tramites":tramites+([otro] if otro else []),"observaciones":obs}).execute()
+                st.session_state[alta_key+"_version"] = st.session_state.get(alta_key+"_version", 0)+1
                 st.rerun()
     if filas:
         with st.expander("Seguimiento e historial ASIG"):
@@ -376,11 +378,24 @@ def construir_concentrado(df, respuestas, requisitos):
     return base
 
 
+def tabla_visible(df):
+    vista = df.copy()
+    for col in vista.columns:
+        if pd.api.types.is_datetime64_any_dtype(vista[col]):
+            formato = "%d/%m/%Y %H:%M" if col == "Fecha de revisión" else "%d/%m/%Y"
+            vista[col] = vista[col].dt.strftime(formato)
+        vista[col] = vista[col].astype(object).where(vista[col].notna(), "—").replace("", "—")
+    return vista
+
+
 def config_tabla(df):
     config = {col: st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm" if col == "Fecha de revisión" else "DD/MM/YYYY") for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])}
     for col in ("Serie", "Placa"):
         if col in df.columns:
-            config[col] = st.column_config.TextColumn(pinned=True)
+            config[col] = st.column_config.TextColumn(pinned=True, width="medium")
+    for col in df.columns:
+        if col not in config and len(col) > 22:
+            config[col] = st.column_config.Column(width="large")
     return config
 
 
@@ -926,8 +941,8 @@ elif modulo == "Historial":
             concentrado["Trámites ASIG al guardar"] = [" | ".join(f["folio"]+": "+(", ".join(f["datos_asig"].get("tramites") or []) or f["datos_asig"].get("conceptos") or "Sin detalle") for f in por_revision.get(i, [])) for i in concentrado["ID revisión"]]
             st.caption("ASIG históricos: una celda vacía puede corresponder a una revisión anterior a la implementación o sin folios.")
             st.caption(f"{len(concentrado):,} revisiones encontradas")
-            st.dataframe(concentrado, hide_index=True, use_container_width=True,
-                         column_config=config_tabla(concentrado))
+            st.dataframe(tabla_visible(concentrado), hide_index=True, use_container_width=True,
+                         column_config=config_tabla(tabla_visible(concentrado)))
             if not concentrado.empty:
                 st.download_button("📥 Descargar concentrado Excel", data=excel_concentrado(concentrado), file_name="Casanova_Checklists.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     except Exception:
@@ -1017,7 +1032,7 @@ elif modulo == "Dashboard":
             lote = series_visibles[inicio_asig:inicio_asig+100]
             offset_asig = 0
             while True:
-                bloque = db.table("atenciones_vehiculo").select("id,serie,folio,situacion,tramites").in_("serie",lote).order("id").range(offset_asig,offset_asig+499).execute().data or []
+                bloque = db.table("atenciones_vehiculo").select("id,serie,folio,situacion,tramites,conceptos,fecha_creacion,fecha_registro,fecha_conclusion,origen,registrado_por,concluido_por,estado_atencion,observaciones").in_("serie",lote).order("id").range(offset_asig,offset_asig+499).execute().data or []
                 asig_actual.extend(bloque)
                 if len(bloque)<500: break
                 offset_asig += 500
@@ -1074,9 +1089,14 @@ elif modulo == "Dashboard":
             if filtro[1][0]=="Sin vínculo":
                 filas_det=[{k:v for k,v in f.items() if k!="id"} for f in sin_asig if f["Serie"] in visibles]
             else:
-                filas_det=[{"Serie":f["serie"],"Folio":f["folio"],"Situación":f["situacion"],"Trámites":", ".join(f.get("tramites") or []) or "—"} for f in (abiertos_asig if filtro[1][0]=="Abiertos" else concluidos_asig) if f["serie"] in visibles]
+                folios_det = [f for f in (abiertos_asig if filtro[1][0]=="Abiertos" else concluidos_asig) if f["serie"] in visibles]
+                responsables = {}
+                for serie in sorted({f["serie"] for f in folios_det if f.get("registrado_por") or f.get("concluido_por")}):
+                    responsables.update({p["id"]: p["nombre"] for p in (db.rpc("responsables_asig", {"p_serie": serie}).execute().data or [])})
+                filas_det = tabla_asig(folios_det, responsables).to_dict("records")
+                filas_det = [{"Serie": f["serie"], **r} for f,r in zip(folios_det, filas_det)]
             if filas_det:
-                st.dataframe(pd.DataFrame(filas_det),hide_index=True,use_container_width=True)
+                st.dataframe(pd.DataFrame(filas_det),hide_index=True,use_container_width=True,column_config=config_tabla(pd.DataFrame(filas_det)))
                 st.download_button("Descargar seguimiento ASIG",excel_concentrado(pd.DataFrame(filas_det)),"Seguimiento_ASIG.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         concentrado=construir_concentrado(detalle,respuestas,requisitos)
         concentrado["Situación actual"] = detalle["Resultado"].to_numpy()
@@ -1085,7 +1105,7 @@ elif modulo == "Dashboard":
             for f in filas_asig:
                 por_serie.setdefault(f["serie"], []).append(f["folio"])
             concentrado[etiqueta] = concentrado["Serie"].map(lambda serie: " | ".join(por_serie.get(serie, [])))
-        st.dataframe(concentrado,hide_index=True,use_container_width=True,column_config=config_tabla(concentrado))
+        st.dataframe(tabla_visible(concentrado),hide_index=True,use_container_width=True,column_config=config_tabla(tabla_visible(concentrado)))
         if not concentrado.empty:
             series_detalle = detalle["serie"].tolist()
             if st.session_state.get("unidad_detalle") not in series_detalle:
@@ -1112,7 +1132,7 @@ elif modulo == "Dashboard":
             st.download_button("Descargar pendientes Excel", excel_concentrado(pd.DataFrame(pendientes_excel)), "Pendientes_Casanova.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.divider()
         def estilo(fig, altura=190):
-            fig.update_layout(height=altura, margin=dict(l=8,r=12,t=12,b=8), font=dict(size=16, color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend_title_text="")
+            fig.update_layout(height=altura, margin=dict(l=8,r=12,t=12,b=8) if not any(getattr(t,"orientation",None)=="h" for t in fig.data) else dict(l=16,r=24,t=32,b=38), font=dict(size=16, color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend_title_text="")
             return fig
         def seleccion(fig, key, destino, altura=190):
             def al_seleccionar():
@@ -1190,9 +1210,9 @@ elif modulo == "Dashboard":
             tr.textfont.color = "white" if tr.name == "Completo" else "#213769"
         fig.update_layout(uniformtext_minsize=20, uniformtext_mode="show")
         fig.update_layout(barmode="stack", legend=dict(orientation="h", y=1.02, yanchor="bottom", x=0, font=dict(size=13)))
-        fig.update_xaxes(title=None, tickformat="d", dtick=1, tickfont=dict(size=15))
+        fig.update_xaxes(title=None, tickformat="d", dtick=1, tickfont=dict(size=15), automargin=True)
         fig.update_yaxes(title=None, automargin=True, tickfont=dict(size=16))
-        seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal", altura=max(155, 40*resumen["Sucursal"].nunique()+65))
+        seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal", altura=max(210, 40*resumen["Sucursal"].nunique()+100))
         with st.expander("Principales pendientes documentales"):
             ranking = largo[largo["Respuesta"].eq("NO")].groupby("Requisito").size().sort_values(ascending=False)
             if ranking.empty:
@@ -1332,7 +1352,7 @@ elif modulo == "Carga de ASIG" and consulta_general:
                 st.stop()
 
             st.dataframe(
-                df.head(100),
+                df.head(100).assign(fecha_creacion=lambda d: d["fecha_creacion"].map(fecha_asig)),
                 hide_index=True
             )
 
