@@ -1018,10 +1018,10 @@ elif modulo == "Dashboard":
                 st.dataframe(pd.DataFrame(pendientes_excel)[["Serie", "Placa", "Pendiente", "Días de pendiente"]], hide_index=True, use_container_width=True)
             st.download_button("Descargar pendientes Excel", excel_concentrado(pd.DataFrame(pendientes_excel)), "Pendientes_Casanova.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.divider()
-        def estilo(fig, altura=250):
-            fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(size=16, color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
+        def estilo(fig, altura=190):
+            fig.update_layout(height=altura, margin=dict(l=8,r=12,t=12,b=8), font=dict(size=16, color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend_title_text="")
             return fig
-        def seleccion(fig, key, destino):
+        def seleccion(fig, key, destino, altura=190):
             def al_seleccionar():
                 evento = st.session_state.get(key, {})
                 puntos = evento.get("selection", {}).get("points", [])
@@ -1031,33 +1031,35 @@ elif modulo == "Dashboard":
                         aplicar_seleccion(destino, datos)
                 elif st.session_state.get("dash_filtro", (None,))[0] == destino:
                     aplicar_seleccion()
-            return st.plotly_chart(estilo(fig), theme=None, use_container_width=True,
+            return st.plotly_chart(estilo(fig, altura), theme=None, use_container_width=True, config={"displayModeBar":False},
                                    key=key, on_select=al_seleccionar, selection_mode="points")
         a,b = st.columns(2)
         with a:
             st.markdown("**Situación documental**")
             conteo = ult["Resultado"].value_counts().rename_axis("Resultado").reset_index(name="Unidades")
             fig = px.pie(conteo, names="Resultado", values="Unidades", hole=.68, color="Resultado", color_discrete_map=colores)
-            fig.update_traces(textinfo="value+percent", textposition="outside", outsidetextfont=dict(color="#213769"), marker=dict(line=dict(color="#FFFFFF", width=2)))
-            fig.add_annotation(text=f"<b>{n:,}</b>", x=.5,y=.5,showarrow=False,font_size=30)
-            st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
-            for estado, cantidad in zip(conteo["Resultado"], conteo["Unidades"]):
-                st.button(f"{estado}: {cantidad}", key=f"general_{estado}",
+            fig.update_traces(textinfo="none", marker=dict(line=dict(color="#FFFFFF", width=2)))
+            fig.add_annotation(text=f"<b>{n:,}</b><br><span style='font-size:12px'>Unidades</span>", x=.5,y=.5,showarrow=False,font_size=28)
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(estilo(fig), theme=None, use_container_width=True, config={"displayModeBar":False})
+            botones_general = st.columns(len(conteo))
+            for boton, estado, cantidad in zip(botones_general, conteo["Resultado"], conteo["Unidades"]):
+                boton.button(f"{estado}: {cantidad}", key=f"general_{estado}", use_container_width=True,
                           on_click=aplicar_seleccion, args=("general", (estado,)), type="primary" if filtro == ("general", (estado,)) else "secondary")
         with b:
             st.markdown("**Avance acumulado de unidades**")
             primera = historial_visible[historial_visible["serie"].isin(ult["serie"])].dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
             avance = primera.groupby(primera["Fecha de revisión"].dt.normalize()).size().cumsum().rename("Unidades").reset_index()
             fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#004876"])
-            fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
-            fig.update_xaxes(title=None, tickformat="%d/%m", nticks=6)
+            fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades", line=dict(width=3), marker=dict(size=7), fillcolor="rgba(0,72,118,0.13)")
+            fig.update_xaxes(title=None, tickformat="%d/%m", nticks=6, tickfont=dict(size=14), showgrid=False)
             if len(avance) == 1:
                 dia = avance["Fecha de revisión"].iloc[0]
                 fig.update_xaxes(tickmode="array", tickvals=[dia], ticktext=[dia.strftime("%d/%m")], range=[dia-pd.Timedelta(days=1), dia+pd.Timedelta(days=1)])
                 fig.update_traces(marker=dict(size=12), mode="markers+text", text=avance["Unidades"], textposition="top center")
                 fig.update_yaxes(range=[0, max(1, int(avance["Unidades"].iloc[0])+1)])
             fig.update_yaxes(title=None, tickformat="d", rangemode="tozero", dtick=max(1, int(avance["Unidades"].max()/5)) if not avance.empty else 1)
-            st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
+            st.plotly_chart(estilo(fig), theme=None, use_container_width=True, config={"displayModeBar":False})
         st.markdown("### Cumplimiento por documento")
         st.caption("Pulsa los botones debajo de cada dona o selecciona una barra para actualizar el detalle superior.")
         for inicio in range(0,len(activos),4):
@@ -1088,17 +1090,17 @@ elif modulo == "Dashboard":
         for tr in fig.data:
             tr.textfont.color = "white" if tr.name == "Completo" else "#213769"
         fig.update_layout(uniformtext_minsize=20, uniformtext_mode="show")
-        fig.update_layout(barmode="stack", legend=dict(orientation="h", y=-.2))
+        fig.update_layout(barmode="stack", legend=dict(orientation="h", y=1.02, yanchor="bottom", x=0, font=dict(size=13)))
         fig.update_xaxes(title=None, tickformat="d", dtick=1, tickfont=dict(size=15))
         fig.update_yaxes(title=None, automargin=True, tickfont=dict(size=16))
-        seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal")
+        seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal", altura=max(155, 40*resumen["Sucursal"].nunique()+65))
         with st.expander("Principales pendientes documentales"):
             ranking = largo[largo["Respuesta"].eq("NO")].groupby("Requisito").size().sort_values(ascending=False)
             if ranking.empty:
                 st.info("Sin pendientes documentales.")
             for nombre, cantidad in ranking.items():
-                a,b = st.columns([5,1.5], vertical_alignment="center")
-                a.markdown(f"**{nombre} · {cantidad}**")
+                a,b = st.columns([7,2], vertical_alignment="center")
+                a.markdown(f"**{nombre} · {cantidad:,}**")
                 a.markdown(f'<div style="height:9px;background:#D2DCEB;border-radius:5px"><div style="height:9px;width:{100*cantidad/ranking.max():.2f}%;background:#FFB700;border-radius:5px"></div></div>', unsafe_allow_html=True)
                 b.button("Ver unidades", key=f"ranking_{nombre}", use_container_width=True, on_click=aplicar_seleccion, args=("documento", (nombre,"NO")), type="primary" if filtro == ("documento", (nombre,"NO")) else "secondary")
         with st.expander("Antigüedad de pendientes"):
@@ -1107,7 +1109,8 @@ elif modulo == "Dashboard":
             for col, rango in zip(cols, rangos):
                 filas = [f for f in pendientes_base if f["Rango"] == rango]
                 with col:
-                    st.metric(rango, len(filas))
+                    st.markdown(f"**{rango}**")
+                    st.markdown(f"<span style='font-size:26px;font-weight:700;color:#213769'>{len(filas):,}</span> <span style='font-size:13px'>pendientes</span>", unsafe_allow_html=True)
                     st.caption(f"{len({f['id'] for f in filas})} unidades")
                     st.button("Ver unidades", key=f"edad_{rango}", use_container_width=True, disabled=not filas, on_click=aplicar_seleccion, args=("antiguedad", (rango,)), type="primary" if filtro == ("antiguedad", (rango,)) else "secondary")
             sin_fecha = sum(f["Rango"] == "Sin fecha" for f in pendientes_base)
