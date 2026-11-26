@@ -85,6 +85,7 @@ button[kind="primary"] {
 .stButton button p {font-size: 16px !important; font-weight: 700 !important;}
 .stButton button[kind="primary"] {background:#FFB700 !important;color:#213769 !important;}
 .block-container {padding-top:2rem;}
+[data-testid="stMetricValue"] {font-size: 30px !important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1017,7 +1018,7 @@ elif modulo == "Dashboard":
                 st.dataframe(pd.DataFrame(pendientes_excel)[["Serie", "Placa", "Pendiente", "Días de pendiente"]], hide_index=True, use_container_width=True)
             st.download_button("Descargar pendientes Excel", excel_concentrado(pd.DataFrame(pendientes_excel)), "Pendientes_Casanova.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.divider()
-        def estilo(fig, altura=330):
+        def estilo(fig, altura=250):
             fig.update_layout(height=altura, margin=dict(l=15,r=15,t=35,b=15), font=dict(size=16, color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="white", plot_bgcolor="white", legend_title_text="")
             return fig
         def seleccion(fig, key, destino):
@@ -1050,13 +1051,18 @@ elif modulo == "Dashboard":
             fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#004876"])
             fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
             fig.update_xaxes(title=None, tickformat="%d/%m", nticks=6)
-            fig.update_yaxes(title=None, tickformat="d", rangemode="tozero")
+            if len(avance) == 1:
+                dia = avance["Fecha de revisión"].iloc[0]
+                fig.update_xaxes(tickmode="array", tickvals=[dia], ticktext=[dia.strftime("%d/%m")], range=[dia-pd.Timedelta(days=1), dia+pd.Timedelta(days=1)])
+                fig.update_traces(marker=dict(size=12), mode="markers+text", text=avance["Unidades"], textposition="top center")
+                fig.update_yaxes(range=[0, max(1, int(avance["Unidades"].iloc[0])+1)])
+            fig.update_yaxes(title=None, tickformat="d", rangemode="tozero", dtick=max(1, int(avance["Unidades"].max()/5)) if not avance.empty else 1)
             st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
         st.markdown("### Cumplimiento por documento")
         st.caption("Pulsa los botones debajo de cada dona o selecciona una barra para actualizar el detalle superior.")
-        for inicio in range(0,len(activos),3):
-            cols = st.columns(3)
-            for col,r in zip(cols,activos[inicio:inicio+3]):
+        for inicio in range(0,len(activos),4):
+            cols = st.columns(4)
+            for col,r in zip(cols,activos[inicio:inicio+4]):
                 with col:
                     nombre = nombres[r["id"]]
                     g = largo[largo["Requisito"] == nombre]["Respuesta"].value_counts()
@@ -1064,22 +1070,24 @@ elif modulo == "Dashboard":
                     pct=f"{si/(n-na):.0%}" if n>na else "N/A"
                     st.markdown(f"**{nombre}**")
                     fig=go.Figure(go.Pie(labels=["SÍ","NO","NO APLICA","Histórico"],values=[si,no,na,hist],hole=.72,marker_colors=[colores["SÍ"],colores["NO"],colores["NO APLICA"],colores["SIN REVISAR"]],textinfo="none",sort=False))
-                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=38)
+                    fig.add_annotation(text=f"<b>{pct}</b>",x=.5,y=.5,showarrow=False,font_size=30)
                     fig.update_layout(showlegend=False)
                     fig.update_traces(marker=dict(line=dict(color="#FFFFFF", width=2)))
-                    st.plotly_chart(estilo(fig,260),theme=None,use_container_width=True,key=f"doc_{r['id']}")
+                    fig = estilo(fig,150)
+                    fig.update_layout(margin=dict(l=4,r=4,t=4,b=4), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                    st.plotly_chart(fig,theme=None,use_container_width=True,key=f"doc_{r['id']}",config={"displayModeBar":False})
                     if hist: st.caption(f"Histórico: {hist:,}")
                     botones = st.columns(3)
                     for boton, estado, cantidad in zip(botones, ["SÍ", "NO", "NO APLICA"], [si,no,na]):
-                        boton.button(f"{estado}: {cantidad}", use_container_width=True, key=f"doc_sel_{r['id']}_{estado}",
+                        boton.button(f"{'N/A' if estado == 'NO APLICA' else estado}: {cantidad}", use_container_width=True, key=f"doc_sel_{r['id']}_{estado}",
                                      on_click=aplicar_seleccion, args=("documento", (nombre,estado)), type="primary" if filtro == ("documento", (nombre,estado)) else "secondary")
         st.markdown("### Comparativo por sucursal")
         resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
         fig=px.bar(resumen,y="Sucursal",x="Unidades",orientation="h",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
-        fig.update_traces(textposition="inside", textfont=dict(size=20), insidetextanchor="middle")
+        fig.update_traces(textposition="inside", textfont=dict(size=24), insidetextanchor="middle")
         for tr in fig.data:
             tr.textfont.color = "white" if tr.name == "Completo" else "#213769"
-        fig.update_layout(uniformtext_minsize=16, uniformtext_mode="show")
+        fig.update_layout(uniformtext_minsize=20, uniformtext_mode="show")
         fig.update_layout(barmode="stack", legend=dict(orientation="h", y=-.2))
         fig.update_xaxes(title=None, tickformat="d", dtick=1, tickfont=dict(size=15))
         fig.update_yaxes(title=None, automargin=True, tickfont=dict(size=16))
@@ -1089,9 +1097,9 @@ elif modulo == "Dashboard":
             if ranking.empty:
                 st.info("Sin pendientes documentales.")
             for nombre, cantidad in ranking.items():
-                a,b = st.columns([4,2], vertical_alignment="center")
+                a,b = st.columns([5,1.5], vertical_alignment="center")
                 a.markdown(f"**{nombre} · {cantidad}**")
-                a.progress(float(cantidad / ranking.max()))
+                a.markdown(f'<div style="height:9px;background:#D2DCEB;border-radius:5px"><div style="height:9px;width:{100*cantidad/ranking.max():.2f}%;background:#FFB700;border-radius:5px"></div></div>', unsafe_allow_html=True)
                 b.button("Ver unidades", key=f"ranking_{nombre}", use_container_width=True, on_click=aplicar_seleccion, args=("documento", (nombre,"NO")), type="primary" if filtro == ("documento", (nombre,"NO")) else "secondary")
         with st.expander("Antigüedad de pendientes"):
             st.caption("Pendientes documentales, no unidades únicas. Antigüedad según historial autorizado visible.")
