@@ -1,4 +1,5 @@
 import uuid
+import streamlit.components.v1 as components
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
@@ -80,6 +81,9 @@ button[kind="primary"] {
 }
 [data-testid="stSidebar"] { background-color: #EEF2F8; }
 [data-testid="stMetric"] { border-top: 4px solid #FFB700 !important; }
+[data-testid="stToolbar"], #MainMenu, [data-testid="stDecoration"], footer, [data-testid="stSidebarCollapsedControl"] {display:none !important;}
+.stButton button[kind="primary"] {background:#FFB700 !important;color:#213769 !important;}
+.block-container {padding-top:2rem;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -475,38 +479,30 @@ mapa_sucursales = {
 # MENÚ
 # =====================================
 
-st.sidebar.title("CASANOVA")
-
-st.sidebar.write(f"👤 {nombre_usuario}")
-
-st.sidebar.caption(ETIQUETAS.get(rol_actual, rol_actual))
-opciones = (["Capturar checklist"] if puede_capturar else []) + ["Historial", "Mi contraseña", "Dashboard"]
+opciones = (["Capturar checklist"] if puede_capturar else []) + ["Historial", "Dashboard", "Mi contraseña"]
 if consulta_general:
     opciones.append("Carga de ASIG")
 if es_maestro:
     opciones.append("Administración")
-
-if st.sidebar.button("🔄 Actualizar base maestra"):
-    try:
-        cargar_base.clear()
-        cargar_base()
-        st.sidebar.success("Base actualizada")
-    except Exception:
-        st.sidebar.error("No se pudo actualizar la base.")
-
-modulo = st.sidebar.radio(
-    "Menú principal",
-    opciones
-)
-
-if st.sidebar.button("Cerrar sesión"):
-
+if st.session_state.get("modulo") not in opciones:
+    st.session_state["modulo"] = opciones[0]
+a, b, c = st.columns([5, 2, 1])
+a.caption("Control documental vehicular")
+b.write(f"**{nombre_usuario}** · {ETIQUETAS.get(rol_actual, rol_actual)}")
+if c.button("Cerrar sesión"):
     try:
         db.auth.sign_out()
     finally:
         st.session_state.clear()
-
     st.rerun()
+modulo = st.radio("Menú principal", opciones, horizontal=True, key="modulo", label_visibility="collapsed")
+if st.button("Actualizar base maestra"):
+    try:
+        cargar_base.clear()
+        cargar_base()
+        st.success("Base actualizada")
+    except Exception:
+        st.error("No se pudo actualizar la base.")
 
 # =====================================
 # CAPTURA DE CHECKLIST
@@ -537,20 +533,20 @@ if modulo == "Capturar checklist" and puede_capturar:
         st.stop()
 
     busqueda = st.text_input(
-        "Últimos 9 caracteres de la serie",
-        max_chars=9
+        "Serie completa o últimos 9 caracteres",
+        key="busqueda_serie", value=st.session_state.pop("serie_para_abrir", "")
     )
 
     if busqueda:
 
         busqueda = normalizar_serie(busqueda)
 
-        if len(busqueda) != 9:
-            st.warning("Ingresa exactamente 9 caracteres.")
+        if len(busqueda) < 9:
+            st.warning("Ingresa al menos 9 caracteres.")
             st.stop()
 
         resultados = df[
-            df["Serie"].str.endswith(busqueda)
+            (df["Serie"].str.endswith(busqueda) if len(busqueda) == 9 else df["Serie"].eq(busqueda))
         ]
 
         if resultados.empty:
@@ -687,14 +683,16 @@ if modulo == "Capturar checklist" and puede_capturar:
             st.warning("No existen requisitos activos.")
             st.stop()
 
-        ultima = db.table("checklist_revisiones").select("id,fecha_revision").eq("serie", serie).order("fecha_revision", desc=True).order("id", desc=True).limit(1).execute().data
+        ultima = db.table("checklist_revisiones").select("id,fecha_revision,usuario,sucursal_id,estatus").eq("serie", serie).order("fecha_revision", desc=True).order("id", desc=True).limit(1).execute().data
         previas = {}
         if ultima:
             previas = {r["requisito_id"]: r for r in db.table("checklist_respuestas").select("*").eq("revision_id", ultima[0]["id"]).execute().data}
-            st.caption("Respuestas de la última revisión accesible. Confirma que siguen vigentes antes de guardar.")
+            anterior = ultima[0]
+            fecha_anterior = pd.Timestamp(anterior["fecha_revision"]).tz_convert("America/Mexico_City").strftime("%d/%m/%Y %H:%M")
+            st.caption(f"Última revisión accesible: {fecha_anterior} · {anterior['usuario']} · {mapa_sucursales.get(anterior['sucursal_id'], 'Sucursal no visible')} · {anterior['estatus']}")
         respuestas = []
 
-        with st.form(f"checklist_{serie}_{sucursal_id}"):
+        with st.container():
 
             categoria_anterior = None
 
@@ -758,12 +756,21 @@ if modulo == "Capturar checklist" and puede_capturar:
                 st.divider()
 
             observaciones_generales = st.text_area(
-                "Observaciones generales"
+                "Observaciones generales", key=f"obs_general_{serie}_{sucursal_id}"
             )
 
-            guardar = st.form_submit_button(
-                "💾 Guardar checklist"
-            )
+            faltantes = [req["requisito"] for req, r in zip(requisitos, respuestas) if r["respuesta"] is None and not r["no_aplica"]]
+            st.progress((len(requisitos)-len(faltantes))/len(requisitos), text=f"{len(requisitos)-len(faltantes)} de {len(requisitos)} contestadas")
+            if faltantes:
+                st.warning("Falta contestar: " + ", ".join(faltantes))
+            firma = repr((serie, sucursal_id, respuestas, observaciones_generales))
+            guardado = st.session_state.get("ultimo_guardado") == firma
+            guardar = st.button("Guardar checklist", disabled=bool(faltantes) or guardado, type="primary")
+            if guardado:
+                st.success("Esta captura ya fue guardada. Modifica las respuestas o inicia una nueva revisión.")
+                if st.button("Nueva revisión"):
+                    st.session_state.pop("ultimo_guardado", None)
+                    st.rerun()
 
         if guardar:
 
@@ -807,7 +814,9 @@ if modulo == "Capturar checklist" and puede_capturar:
 
             try:
                 resultado = db.rpc("guardar_checklist_atomico", {"p_revision": revision, "p_respuestas": respuestas}).execute()
+                st.session_state["ultimo_guardado"] = firma
                 st.success(f"Checklist guardado correctamente. Registro: {resultado.data}")
+                st.rerun()
             except Exception:
                 st.error("No se confirmó el guardado. Revisa el historial antes de reintentar.")
 
@@ -927,18 +936,21 @@ elif modulo == "Dashboard":
         a.metric("Unidades revisadas", f"{n:,}")
         b.metric("Cumplimiento general", f"{completos/aplicables:.1%}" if aplicables else "N/A")
         c.metric("Unidades completas", f"{completos:,}")
-        d.metric("Con pendientes (NO)", f"{pendientes:,}")
+        d.metric("Unidades con pendientes (NO)", f"{pendientes:,}")
         st.caption("Última revisión global por serie, después filtrada por sucursal y fecha. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
         def aplicar_seleccion(tipo=None, valores=()):
             st.session_state["dash_doc"] = "Todos"
-            st.session_state["dash_resp"] = "Todas"
+            st.session_state["subir_detalle"] = bool(tipo)
             st.session_state["dash_resultado"] = "Todas"
             if tipo:
                 st.session_state["dash_filtro"] = (tipo, tuple(valores))
             else:
                 st.session_state.pop("dash_filtro", None)
             st.session_state["dash_reset"] = st.session_state.get("dash_reset", 0) + 1
+        st.markdown("<div id='detalle-unidades'></div>", unsafe_allow_html=True)
         st.markdown("### Detalle de unidades")
+        if st.session_state.pop("subir_detalle", False):
+            components.html("""<script>try {const d=window.parent.document; const e=d.getElementById('detalle-unidades'); if(e)e.scrollIntoView({behavior:'smooth',block:'start'});}catch(e){}</script>""", height=0)
         st.button("Limpiar selección de gráfica", on_click=aplicar_seleccion)
         filtro=st.session_state.get("dash_filtro")
         detalle=ult.copy()
@@ -952,20 +964,28 @@ elif modulo == "Dashboard":
             else:
                 detalle=detalle[(detalle["Sucursal"]==valores[0]) & (detalle["Resultado"]==valores[1])]
             st.caption("Selección: " + " · ".join(valores))
-        a,b,c=st.columns(3)
+        a,c=st.columns(2)
         doc=a.selectbox("Documento",["Todos"]+list(nombres.values()),key="dash_doc")
-        resp=b.selectbox("Respuesta",["Todas","SÍ","NO","NO APLICA","SIN REVISAR","SIN REGISTRO"],key="dash_resp")
-        resultado=c.selectbox("Situación general",["Todas","Completo","Con pendientes","Histórico incompleto","No aplica"],key="dash_resultado")
-        if doc!="Todos" or resp!="Todas":
+        resultado=c.selectbox("Situación general",["Todas","Completo","Con pendientes"],key="dash_resultado")
+        if doc!="Todos":
             g=largo
             if doc!="Todos": g=g[g["Requisito"]==doc]
-            if resp!="Todas": g=g[g["Respuesta"]==resp]
             detalle=detalle[detalle["id"].isin(g["id"])]
-        if resultado!="Todas": detalle=detalle[detalle["Resultado"]==resultado]
+        if resultado=="Con pendientes": detalle=detalle[detalle["Resultado"].isin(["Con pendientes","Histórico incompleto"])]
+        elif resultado!="Todas": detalle=detalle[detalle["Resultado"]==resultado]
         st.metric("Unidades seleccionadas",len(detalle))
         concentrado=construir_concentrado(detalle,respuestas,requisitos)
         concentrado["Situación actual"] = detalle["Resultado"].to_numpy()
         st.dataframe(concentrado,hide_index=True,use_container_width=True)
+        if not concentrado.empty:
+            serie_elegida = st.selectbox("Unidad para consultar", detalle["serie"].tolist(), key="unidad_detalle")
+            st.code(serie_elegida, language=None)
+            if puede_capturar:
+                def abrir_checklist():
+                    st.session_state["serie_para_abrir"] = serie_elegida
+                    st.session_state.pop("busqueda_serie", None)
+                    st.session_state["modulo"] = "Capturar checklist"
+                st.button("Abrir checklist", on_click=abrir_checklist)
         if not concentrado.empty:
             st.download_button("Descargar detalle Excel",excel_concentrado(concentrado),"Dashboard_Casanova.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         pendientes_excel = []
@@ -1007,13 +1027,15 @@ elif modulo == "Dashboard":
             st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
             for estado, cantidad in zip(conteo["Resultado"], conteo["Unidades"]):
                 st.button(f"{estado}: {cantidad}", key=f"general_{estado}",
-                          on_click=aplicar_seleccion, args=("general", (estado,)))
+                          on_click=aplicar_seleccion, args=("general", (estado,)), type="primary" if filtro == ("general", (estado,)) else "secondary")
         with b:
             st.markdown("**Avance acumulado de unidades**")
-            primera = df.dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
+            primera = historial_visible[historial_visible["serie"].isin(ult["serie"])].dropna(subset=["Fecha de revisión"]).sort_values("Fecha de revisión").drop_duplicates("serie")
             avance = primera.groupby(primera["Fecha de revisión"].dt.normalize()).size().cumsum().rename("Unidades").reset_index()
             fig = px.area(avance, x="Fecha de revisión", y="Unidades", markers=True, color_discrete_sequence=["#004876"])
             fig.update_traces(hovertemplate="%{x|%d/%m/%Y}: %{y} unidades")
+            fig.update_xaxes(title=None, tickformat="%d/%m", nticks=6)
+            fig.update_yaxes(title=None, tickformat="d", rangemode="tozero")
             st.plotly_chart(estilo(fig), theme=None, use_container_width=True)
         st.markdown("### Cumplimiento por documento")
         st.caption("Pulsa los botones debajo de cada dona o selecciona una barra para actualizar el detalle superior.")
@@ -1035,12 +1057,32 @@ elif modulo == "Dashboard":
                     botones = st.columns(3)
                     for boton, estado, cantidad in zip(botones, ["SÍ", "NO", "NO APLICA"], [si,no,na]):
                         boton.button(f"{estado}: {cantidad}", key=f"doc_sel_{r['id']}_{estado}",
-                                     on_click=aplicar_seleccion, args=("documento", (nombre,estado)))
+                                     on_click=aplicar_seleccion, args=("documento", (nombre,estado)), type="primary" if filtro == ("documento", (nombre,estado)) else "secondary")
         st.markdown("### Comparativo por sucursal")
         resumen=ult.groupby(["Sucursal","Resultado"]).size().reset_index(name="Unidades")
-        fig=px.bar(resumen,x="Sucursal",y="Unidades",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
-        fig.update_traces(textposition="outside", cliponaxis=False)
+        fig=px.bar(resumen,y="Sucursal",x="Unidades",orientation="h",color="Resultado",color_discrete_map=colores,text="Unidades",custom_data=["Sucursal","Resultado"])
+        fig.update_traces(textposition="inside")
+        fig.update_layout(barmode="stack", legend=dict(orientation="h", y=-.2))
+        fig.update_xaxes(title=None, tickformat="d")
+        fig.update_yaxes(title=None, automargin=True)
         seleccion(fig,f"dash_barras_{st.session_state.get('dash_reset',0)}","sucursal")
+        with st.expander("Principales pendientes documentales"):
+            ranking = largo[largo["Respuesta"].eq("NO")].groupby("Requisito").size().sort_values().reset_index(name="Pendientes")
+            if ranking.empty:
+                st.info("Sin pendientes documentales.")
+            else:
+                fig_p = px.bar(ranking, y="Requisito", x="Pendientes", orientation="h", text="Pendientes", color_discrete_sequence=["#FFB700"])
+                fig_p.update_yaxes(title=None, automargin=True)
+                fig_p.update_xaxes(title=None, tickformat="d")
+                st.plotly_chart(estilo(fig_p), use_container_width=True)
+        with st.expander("Antigüedad de pendientes"):
+            if pendientes_excel:
+                edades = pd.DataFrame(pendientes_excel)
+                edades["Rango"] = pd.cut(edades["Días de pendiente"], [-1,7,15,30,float("inf")], labels=["0 a 7 días","8 a 15 días","16 a 30 días","Más de 30 días"])
+                st.caption("Antigüedad calculada con el historial visible y los filtros del detalle.")
+                st.dataframe(edades.groupby("Rango", observed=False).size().reset_index(name="Pendientes"), hide_index=True)
+            else:
+                st.info("Sin pendientes en el detalle seleccionado.")
         with st.expander("Consultar detalle por sucursal"):
             for fila in resumen.itertuples(index=False):
                 st.button(f"{fila.Sucursal} · {fila.Resultado}: {fila.Unidades}",
