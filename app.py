@@ -285,7 +285,7 @@ def dias_asig(f):
 def tabla_asig(filas, nombres):
     return pd.DataFrame([{"Folio": f["folio"], "Situación": f.get("situacion"),
         "Trámites": ", ".join(f.get("tramites") or []), "Conceptos Excel": f.get("conceptos"),
-        "Fecha de creación": fecha_asig(f.get("fecha_creacion")), "Días abiertos": dias_asig(f), "Origen": f.get("origen"), "Registrado por": nombres.get(f.get("registrado_por"), "Sin registro / no visible"),
+        "Fecha de creación": fecha_asig(f.get("fecha_creacion") or (f.get("fecha_registro") if f.get("origen")=="Manual" else None)), "Días abiertos": dias_asig(f), "Origen": f.get("origen"), "Registrado por": nombres.get(f.get("registrado_por"), "Sin registro / no visible"),
         "Registro": fecha_asig(f.get("fecha_registro")), "Conclusión": fecha_asig(f.get("fecha_conclusion")),
         "Concluido por": nombres.get(f.get("concluido_por"), "Sin registro / no visible"),
         "Estado Excel": f.get("estado_atencion"), "Observaciones": f.get("observaciones")} for f in filas]).fillna("—").replace("", "—")
@@ -317,7 +317,7 @@ def panel_asig(serie, editable, prefijo):
             elif any(f["folio"]==folio for f in filas):
                 st.warning("El folio ya existe para esta unidad. Utiliza la opción de seguimiento.")
             else:
-                db.table("atenciones_vehiculo").insert({"serie":serie,"folio":folio,"origen":"Manual","estado_atencion":"Registro manual","situacion":situacion,"tramites":tramites+([otro] if otro else []),"observaciones":obs}).execute()
+                db.table("atenciones_vehiculo").insert({"serie":serie,"folio":folio,"origen":"Manual","fecha_creacion":pd.Timestamp.now(tz="America/Mexico_City").tz_localize(None).isoformat(),"estado_atencion":"Registro manual","situacion":situacion,"tramites":tramites+([otro] if otro else []),"observaciones":obs}).execute()
                 st.rerun()
     if filas:
         with st.expander("Seguimiento e historial ASIG"):
@@ -331,9 +331,9 @@ def panel_asig(serie, editable, prefijo):
             if guardar:
                 db.table("atenciones_vehiculo").update({"situacion":situacion,"tramites":list(dict.fromkeys(actuales+adicionales+([otro] if otro else [])))}).eq("id",elegido["id"]).execute()
                 st.rerun()
-            eventos = db.table("historial_asig").select("movimiento,nombre_usuario,fecha_movimiento").eq("asig_id",elegido["id"]).order("id",desc=True).limit(100).execute().data or []
+            eventos = db.table("historial_asig").select("folio,movimiento,nombre_usuario,fecha_movimiento").eq("asig_id",elegido["id"]).order("id",desc=True).limit(100).execute().data or []
             if eventos:
-                st.dataframe(pd.DataFrame(eventos).assign(fecha_movimiento=lambda d: d["fecha_movimiento"].map(fecha_asig)).rename(columns={"movimiento":"Movimiento","nombre_usuario":"Responsable","fecha_movimiento":"Fecha y hora"}).fillna("—"),hide_index=True,use_container_width=True)
+                st.dataframe(pd.DataFrame(eventos).assign(movimiento=lambda d: d.apply(lambda r: str(r["movimiento"]).replace("ASIG", r["folio"], 1) if str(r["movimiento"]).startswith("ASIG") else r["folio"]+" · "+r["movimiento"], axis=1)).drop(columns=["folio"]).assign(fecha_movimiento=lambda d: d["fecha_movimiento"].map(fecha_asig)).rename(columns={"movimiento":"Movimiento","nombre_usuario":"Responsable","fecha_movimiento":"Fecha y hora"}).fillna("—"),hide_index=True,use_container_width=True)
 
 
 def estado_respuesta(r):
@@ -1060,15 +1060,24 @@ elif modulo == "Dashboard":
                 detalle=detalle[(detalle["Sucursal"]==valores[0]) & (detalle["Resultado"]==valores[1])]
             st.caption("Selección: " + " · ".join(valores))
         a,c=st.columns(2)
-        doc=a.selectbox("Documento",["Todos"]+list(nombres.values()),key="dash_doc")
+        doc=a.selectbox("Documento pendiente",["Todos"]+list(nombres.values()),key="dash_doc")
         resultado=c.selectbox("Situación general",["Todas","Completo","Con pendientes"],key="dash_resultado")
         if doc!="Todos":
             g=largo
             if doc!="Todos": g=g[g["Requisito"]==doc]
-            detalle=detalle[detalle["id"].isin(g["id"])]
+            detalle=detalle[detalle["id"].isin(g.loc[g["Respuesta"].eq("NO"),"id"])]
         if resultado=="Con pendientes": detalle=detalle[detalle["Resultado"].isin(["Con pendientes","Histórico incompleto"])]
         elif resultado!="Todas": detalle=detalle[detalle["Resultado"]==resultado]
         st.metric("Unidades seleccionadas",len(detalle))
+        if filtro and filtro[0]=="asig":
+            visibles=set(detalle["serie"])
+            if filtro[1][0]=="Sin vínculo":
+                filas_det=[{k:v for k,v in f.items() if k!="id"} for f in sin_asig if f["Serie"] in visibles]
+            else:
+                filas_det=[{"Serie":f["serie"],"Folio":f["folio"],"Situación":f["situacion"],"Trámites":", ".join(f.get("tramites") or []) or "—"} for f in (abiertos_asig if filtro[1][0]=="Abiertos" else concluidos_asig) if f["serie"] in visibles]
+            if filas_det:
+                st.dataframe(pd.DataFrame(filas_det),hide_index=True,use_container_width=True)
+                st.download_button("Descargar seguimiento ASIG",excel_concentrado(pd.DataFrame(filas_det)),"Seguimiento_ASIG.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         concentrado=construir_concentrado(detalle,respuestas,requisitos)
         concentrado["Situación actual"] = detalle["Resultado"].to_numpy()
         for etiqueta, filas_asig in [("ASIG abiertos actuales", abiertos_asig), ("ASIG concluidos actuales", concluidos_asig)]:
@@ -1083,6 +1092,11 @@ elif modulo == "Dashboard":
                 st.session_state.pop("unidad_detalle", None)
             serie_elegida = st.selectbox("Unidad para consultar", series_detalle, key="unidad_detalle")
             st.code(serie_elegida, language=None)
+            if consulta_general:
+                def abrir_asig():
+                    st.session_state["gestion_asig_busqueda"] = serie_elegida
+                    st.session_state["modulo"] = "Gestión ASIG"
+                st.button("Abrir gestión ASIG", on_click=abrir_asig)
             if puede_capturar:
                 def abrir_checklist():
                     st.session_state["serie_para_abrir"] = serie_elegida
@@ -1133,11 +1147,11 @@ elif modulo == "Dashboard":
             if not avance.empty:
                 fechas = avance["Fecha de revisión"].dt.strftime("%d/%m/%Y").tolist()
                 cantidades = avance["Unidades"].tolist()
-                fig.add_trace(go.Scatter(x=fechas, y=cantidades, mode="markers+text" if len(fechas)==1 else "lines+markers", text=cantidades, textposition="top center", marker=dict(size=10,color="#004876"), line=dict(color="#004876",width=3), fill="tozeroy" if len(fechas)>1 else None, fillcolor="rgba(0,72,118,0.13)", hovertemplate="%{x}: %{y} unidades<extra></extra>"))
+                fig.add_trace(go.Scatter(x=fechas, y=cantidades, mode="markers+text" if len(fechas)==1 else "lines+markers+text", text=cantidades, textposition="top center", marker=dict(size=10,color="#004876"), line=dict(color="#004876",width=3), fill="tozeroy" if len(fechas)>1 else None, fillcolor="rgba(0,72,118,0.13)", hovertemplate="%{x}: %{y} unidades<extra></extra>"))
                 fig.update_yaxes(range=[0,max(cantidades)*1.2+1],dtick=max(1,int(max(cantidades)/5)),tickformat="d")
-                fig.update_xaxes(type="category",nticks=5,showgrid=False,tickfont=dict(size=12))
+                fig.update_xaxes(type="category",nticks=5,showgrid=False,tickfont=dict(size=12), range=[-.35, max(.35,len(fechas)-.65)], automargin=True)
             fig = estilo(fig,230)
-            fig.update_layout(margin=dict(l=38,r=20,t=25,b=48))
+            fig.update_layout(margin=dict(l=48,r=48,t=25,b=48))
             st.plotly_chart(fig,theme=None,use_container_width=True,config={"displayModeBar":False})
         st.markdown("### Seguimiento ASIG")
         cols = st.columns(3)
