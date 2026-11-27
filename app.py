@@ -352,6 +352,11 @@ def panel_asig(serie, editable, prefijo):
                 st.dataframe(pd.DataFrame(eventos).assign(movimiento=lambda d: d.apply(lambda r: str(r["movimiento"]).replace("ASIG", r["folio"], 1) if str(r["movimiento"]).startswith("ASIG") else r["folio"]+" · "+r["movimiento"], axis=1)).drop(columns=["folio"]).assign(fecha_movimiento=lambda d: d["fecha_movimiento"].map(fecha_asig)).rename(columns={"movimiento":"Movimiento","nombre_usuario":"Responsable","fecha_movimiento":"Fecha y hora"}).fillna("—"),hide_index=True,use_container_width=True)
 
 
+def permite_no_aplica(requisito):
+    nombre = normalizar_texto(requisito)
+    return nombre in {"permiso antra estampa", "permiso antra documento", "permisos antra", "permiso antra"}
+
+
 def estado_respuesta(r):
     if r is None:
         return "SIN REGISTRO"
@@ -784,11 +789,13 @@ if modulo == "Capturar checklist" and puede_capturar:
 
                 clave = f"{serie}_{sucursal_id}_{r['id']}_{ultima[0]['id'] if ultima else 0}"
                 previa = previas.get(r["id"], {})
-                indice = {"SÍ": 0, "NO": 1, "NO APLICA": 2}.get(estado_respuesta(previa))
+                opciones_respuesta = ["Sí", "No"] + (["No aplica"] if permite_no_aplica(r["requisito"]) else [])
+                anterior_respuesta = {"SÍ": "Sí", "NO": "No", "NO APLICA": "No aplica"}.get(estado_respuesta(previa))
+                indice = opciones_respuesta.index(anterior_respuesta) if anterior_respuesta in opciones_respuesta else None
 
                 respuesta = st.radio(
                     r["requisito"].upper(),
-                    ["Sí", "No", "No aplica"],
+                    opciones_respuesta,
                     index=indice,
                     horizontal=True,
                     key=f"respuesta_{clave}"
@@ -866,7 +873,7 @@ if modulo == "Capturar checklist" and puede_capturar:
             elif pendientes:
                 estatus = "Con pendientes"
             else:
-                estatus = "No aplica" if all(r["no_aplica"] for r in respuestas) else "Completo"
+                estatus = "Completo"
 
             revision = {
                 "serie": serie,
@@ -994,11 +1001,15 @@ elif modulo == "Dashboard":
         lookup = {(r["revision_id"], r["requisito_id"]): r for r in respuestas}
         nombres = {r["id"]: r["requisito"] for r in activos}
         largo = pd.DataFrame([{"id": i, "Sucursal": sucursal, "Requisito": nombres[r["id"]], "Respuesta": estado_respuesta(lookup.get((i,r["id"])))} for i,sucursal in zip(ult["id"],ult["Sucursal"]) for r in activos], columns=["id", "Sucursal", "Requisito", "Respuesta"])
+        es_antra = largo["Requisito"].map(permite_no_aplica).astype(bool)
+        ids_no_aplica = set(largo.loc[es_antra & largo["Respuesta"].eq("NO APLICA"), "id"])
+        # Respuestas históricas no permitidas requieren revisión, sin alterar la BD.
+        largo.loc[~es_antra & largo["Respuesta"].eq("NO APLICA"), "Respuesta"] = "SIN REVISAR"
         def clasificar(g):
             estados = set(g["Respuesta"])
             if "NO" in estados: return "Con pendientes"
             if estados & {"SIN REVISAR", "SIN REGISTRO"}: return "Histórico incompleto"
-            if estados == {"NO APLICA"}: return "No aplica"
+            if estados == {"NO APLICA"}: return "Histórico incompleto"
             return "Completo"
         ult["Resultado"] = ult["id"].map({i: clasificar(g) for i,g in largo.groupby("id")})
         def limpiar_dashboard():
@@ -1006,21 +1017,25 @@ elif modulo == "Dashboard":
                 st.session_state[k] = v
             st.session_state.pop("dash_filtro", None)
             st.session_state["dash_reset"] = st.session_state.get("dash_reset", 0) + 1
+        def cambiar_filtros_dashboard():
+            st.session_state.pop("dash_filtro", None)
+            st.session_state.pop("unidad_detalle", None)
+            st.session_state["dash_reset"] = st.session_state.get("dash_reset", 0) + 1
         a,b,c = st.columns(3)
-        texto = a.text_input("Serie o placa", key="dash_serie")
-        suc = b.selectbox("Sucursal", ["Todas"] + sorted(ult["Sucursal"].unique()), key="dash_suc")
+        texto = a.text_input("Serie o placa", key="dash_serie", on_change=cambiar_filtros_dashboard)
+        suc = b.selectbox("Sucursal", ["Todas"] + sorted(ult["Sucursal"].unique()), key="dash_suc", on_change=cambiar_filtros_dashboard)
         capturas = ult if suc == "Todas" else ult[ult["Sucursal"].eq(suc)]
         opciones_capt = ["Todos"] + sorted(capturas["usuario"].dropna().unique())
         if st.session_state.get("dash_capt") not in opciones_capt:
             st.session_state["dash_capt"] = "Todos"
-        capt = c.selectbox("Capturista", opciones_capt, key="dash_capt")
+        capt = c.selectbox("Capturista", opciones_capt, key="dash_capt", on_change=cambiar_filtros_dashboard)
         a,b,c = st.columns(3)
         if st.session_state.get("dash_resultado") not in ["Todos","Completo","Con pendientes","No aplica"]:
             st.session_state["dash_resultado"] = "Todos"
-        resultado = a.selectbox("Situación general", ["Todos","Completo","Con pendientes","No aplica"], key="dash_resultado")
-        desde = b.date_input("Fecha inicial", value=None, format="DD/MM/YYYY", key="dash_desde")
-        hasta = c.date_input("Fecha final", value=None, format="DD/MM/YYYY", key="dash_hasta")
-        doc = st.selectbox("Documento pendiente", ["Todos"]+list(dict.fromkeys(nombres.values())), key="dash_doc")
+        resultado = a.selectbox("Situación general", ["Todos","Completo","Con pendientes","No aplica"], key="dash_resultado", on_change=cambiar_filtros_dashboard)
+        desde = b.date_input("Fecha inicial", value=None, format="DD/MM/YYYY", key="dash_desde", on_change=cambiar_filtros_dashboard)
+        hasta = c.date_input("Fecha final", value=None, format="DD/MM/YYYY", key="dash_hasta", on_change=cambiar_filtros_dashboard)
+        doc = st.selectbox("Documento pendiente", ["Todos"]+list(dict.fromkeys(nombres.values())), key="dash_doc", on_change=cambiar_filtros_dashboard)
         st.button("Limpiar filtros", on_click=limpiar_dashboard)
         if desde and hasta and desde > hasta:
             st.warning("Revisa el periodo seleccionado.")
@@ -1032,7 +1047,10 @@ elif modulo == "Dashboard":
         if capt != "Todos": ult = ult[ult["usuario"].eq(capt)]
         if desde: ult = ult[ult["Fecha de revisión"] >= pd.Timestamp(desde)]
         if hasta: ult = ult[ult["Fecha de revisión"] < pd.Timestamp(hasta) + pd.Timedelta(days=1)]
-        if resultado != "Todos": ult = ult[ult["Resultado"].eq(resultado)]
+        if resultado == "No aplica":
+            ult = ult[ult["id"].isin(ids_no_aplica)]
+        elif resultado != "Todos":
+            ult = ult[ult["Resultado"].eq(resultado)]
         if doc != "Todos": ult = ult[ult["id"].isin(largo.loc[largo["Requisito"].eq(doc) & largo["Respuesta"].eq("NO"), "id"])]
         largo = largo[largo["id"].isin(ult["id"])]
         metricas = st.container()
@@ -1109,13 +1127,13 @@ elif modulo == "Dashboard":
         sin_asig = [f for f in sin_asig if f["id"] in ids and (doc == "Todos" or f["Pendiente"] == doc)]
         with metricas:
             n = len(ult); completos = int(ult["Resultado"].eq("Completo").sum()); pendientes = int(ult["Resultado"].eq("Con pendientes").sum())
-            aplicables = n - int(ult["Resultado"].eq("No aplica").sum())
+            aplicables = n
             a,b,c,d = st.columns(4)
             a.metric("Total de unidades", f"{n:,}")
             b.metric("Cumplimiento general", f"{completos/aplicables:.1%}" if aplicables else "N/A")
             c.metric("Unidades completas", f"{completos:,}")
             d.metric("Unidades con pendientes (NO)", f"{pendientes:,}")
-            st.caption("Última revisión global por serie. Todos los indicadores corresponden a la selección. Los históricos incompletos no cuentan como completos; las unidades totalmente no aplicables se excluyen del porcentaje.")
+            st.caption("Última revisión global por serie. Todos los indicadores corresponden a la selección. No aplica filtra unidades con al menos un permiso ANTRA no aplicable, sin afectar su cumplimiento. Los históricos incompletos no cuentan como completos.")
         if ult.empty:
             st.info("No hay unidades para los filtros seleccionados.")
             st.stop()
@@ -1233,8 +1251,9 @@ elif modulo == "Dashboard":
                     fig.update_layout(margin=dict(l=4,r=4,t=4,b=4), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
                     st.plotly_chart(fig,theme=None,use_container_width=True,key=f"doc_{r['id']}",config={"displayModeBar":False})
                     if hist: st.caption(f"Histórico: {hist:,}")
-                    botones = st.columns(3)
-                    for boton, estado, cantidad in zip(botones, ["SÍ", "NO", "NO APLICA"], [si,no,na]):
+                    estados_doc = ["SÍ", "NO"] + (["NO APLICA"] if permite_no_aplica(nombre) else [])
+                    botones = st.columns(len(estados_doc))
+                    for boton, estado, cantidad in zip(botones, estados_doc, [si,no,na]):
                         boton.button(f"{'N/A' if estado == 'NO APLICA' else estado}: {cantidad}", use_container_width=True, key=f"doc_sel_{r['id']}_{estado}",
                                      on_click=aplicar_seleccion, args=("documento", (nombre,estado)), type="primary" if filtro == ("documento", (nombre,estado)) else "secondary")
         st.markdown("### Comparativo por sucursal")
