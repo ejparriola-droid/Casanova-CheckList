@@ -1,4 +1,5 @@
 import uuid
+import base64
 import streamlit.components.v1 as components
 import streamlit as st
 import plotly.express as px
@@ -15,6 +16,8 @@ from supabase import create_client
 # =====================================
 # CONFIGURACIÓN
 # =====================================
+
+LOGO_CASANOVA = base64.b64decode("/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJTEUAAQEAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADb/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCACEAXkDASIAAhEBAxEB/8QAHQABAAMBAQADAQAAAAAAAAAAAAcICQYFAQIDBP/EAFwQAAEDAwIDAwUJBw0LDQAAAAEAAgMEBQYHEQgSIQkTMRQiQVFhFRkyV3GBkZXTFhdSVqGz0hgjNzhCQ2JydXaCkpMkVGWDlKWxtNHU4iUzNkZTVVhzdKOywcL/xAAcAQEAAgMBAQEAAAAAAAAAAAAAAgMEBQYBBwj/xAA8EQABAwIEAwUECAUFAQAAAAABAAIDBBEFEiExBhNRIkFxofAUYYGRBxUyQlKxwdEWJTRy4SQzNWKC8f/aAAwDAQACEQMRAD8A1TREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREXPZxqDhOmtjfkme5Pb7HbWO5O/rJgwOf4hrR4vd0PmtBPTwXQrH3tB9Rr/AJpxHX7Hq+rk9ysU7q226l5jyR7xMfK/bw5nPcdz47Bo9Cz8OovbpuWTYAXKx6mfkMzd60CPHpwogkffWhO3qttZ9kvj9Xrwo/GtD9WVn2SpXjPZkav5TjdpyaizjEYqe70MFfEyR9TztZLG17Q7aIjcBw32Xpe9V60fj7hv9pU/ZLZGiwsGxlPr4LGE9Ufuevmrhfq9eFH41ofqys+yUy4TmuNaiYtb80w65C4Wa6MdJSVIjfGJGhxaTyvAcPOaR1HoWbHvVetH4+4b/aVP2Sv7w8abXbSDRjGNN77W0lZX2OmkhmnpS4xPLppHgt5gD4PA6hYVdBRRMBpnlxv5fIK+CSZ7rSNsFIyrTrlx8aNaI5TPhE9JdsjvdEQ2thtbI+6pH7b8j5HuA5+vVrQdvA7Hopd1v1ModH9KMm1Friw+49C+SnjcektS7zIY/wClI5g+QkrGLSzTjMOInViDE7bVmW736aorausn3cGbB0ssrz7T+Vw9aswugjqQ6af7DfXkoVVQ6Ihke5WuHD3xX6WcR8VZT4bNXUF3t8YlqrVco2x1DYidu8ZyOc17NyBuDuCRuBuN5mWHnD5qDctBdfcfyW5iWjbabobfeYXdC2ne4xVDXD0loLjt+E0LcCKWOaNk0MjXxyNDmuadw4HwIPqVeK0LaKUcv7J2U6ScztObcLxM3zvENN8bqsuzm/0tntFGB3tTUO2G58GtA6ucT4NAJPoCrrVdpTww0874YrpkVS1p2EsVoeGu9o5iD9IChntYshuTJNPMUZUPbQStr7hLED5r5mmJjHEekta5+38YriOHDs+bHrtpBZdTq3U2utE11fVMdRxWxkzY+6qJIhs4yAncM38PSsimoKVtK2pqnEZjpb4+49FVLUSmUxRDZWY98v4Zf76yf6p/4098w4Zf75yf6p/41GfvTeMfHTdPqaP7VPem8Y+Om6fU0f2qly8I/G7z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")
 
 st.set_page_config(
     page_title="Casanova CheckList",
@@ -54,12 +57,12 @@ st.markdown("""
 <style>
 .stApp {
     font-family: "Montserrat", "Century Gothic", Arial, sans-serif;
-    background-color: #EEF2F8;
-    color: #213769;
+    background-color: #F7F9FC;
+    color: #111111;
 }
 h1, h2, h3, h4, label {
     font-family: "Montserrat", "Century Gothic", Arial, sans-serif;
-    color: #213769 !important;
+    color: #111111 !important;
 }
 div[data-testid="stMetric"] {
     background: white;
@@ -70,7 +73,7 @@ div[data-testid="stMetric"] {
 div[data-testid="stMetricValue"] {
     font-weight: 700;
     font-size: 1.35rem;
-    color: #213769;
+    color: #111111;
 }
 div.stButton > button,
 div.stDownloadButton > button,
@@ -79,13 +82,24 @@ button[kind="primary"] {
     color: white !important;
     border-radius: 8px;
 }
-[data-testid="stSidebar"] { background-color: #EEF2F8; }
+[data-testid="stSidebar"] { background-color: #F7F9FC; }
 [data-testid="stMetric"] { border-top: 4px solid #FFB700 !important; }
 [data-testid="stToolbar"], #MainMenu, [data-testid="stDecoration"], footer, [data-testid="stSidebarCollapsedControl"] {display:none !important;}
 .stButton button p {font-size: 16px !important; font-weight: 700 !important;}
 .stButton button[kind="primary"] {background:#FFB700 !important;color:#213769 !important;}
 .block-container {padding-top:2rem;}
 [data-testid="stMetricValue"] {font-size: 30px !important;}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p,
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] p,
+[data-testid="stMetricValue"], [data-testid="stWidgetLabel"] p,
+[data-testid="stMarkdownContainer"] p, [data-testid="stRadio"] label,
+[data-baseweb="select"] *, [data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea, [data-testid="stDateInput"] input {
+    color: #111111 !important;
+}
+[data-baseweb="input"] input::placeholder, textarea::placeholder {color:#555555 !important; opacity:1;}
+[data-testid="stButton"] button p, [data-testid="stDownloadButton"] button p {color:white !important;}
+[data-testid="stButton"] button[kind="primary"] p {color:#111111 !important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -461,11 +475,9 @@ def descargar_excel(tablas, nombre):
 # ENCABEZADO
 # =====================================
 
-st.title("🚗 CASANOVA CHECKLIST")
-
-st.caption(
-    "CORPORATIVO | CONTROL DE TRÁMITES VEHICULARES"
-)
+st.image(LOGO_CASANOVA, width=300)
+st.subheader("LISTA DE VERIFICACIÓN DE CASANOVA")
+st.caption("CONTROL DE TRÁMITES VEHICULARES")
 
 st.divider()
 
@@ -905,13 +917,11 @@ elif modulo == "Historial":
             df["Fecha de revisión"] = pd.to_datetime(df["fecha_revision"], utc=True, errors="coerce", format="mixed").dt.tz_convert("America/Mexico_City").dt.tz_localize(None)
             df = df.sort_values("Fecha de revisión", ascending=False)
             c1, c2, c3 = st.columns(3)
-            c1.metric("Revisiones", len(df))
-            c2.metric("Completas", int(df["estatus"].eq("Completo").sum()))
-            c3.metric("No completas", int(df["estatus"].ne("Completo").sum()))
             a, b, c = st.columns(3)
             texto = a.text_input("Serie o placa")
             suc = b.selectbox("Sucursal", ["Todas"] + sorted(df["Sucursal"].unique().tolist()))
-            capt = c.selectbox("Capturista", ["Todos"] + sorted(df["usuario"].dropna().unique().tolist()))
+            df_capturistas = df if suc == "Todas" else df[df["Sucursal"].eq(suc)]
+            capt = c.selectbox("Capturista", ["Todos"] + sorted(df_capturistas["usuario"].dropna().unique().tolist()))
             a, b, c = st.columns(3)
             estado = a.selectbox("Estatus", ["Todos"] + sorted(df["estatus"].dropna().unique().tolist()))
             desde = b.date_input("Fecha inicial", value=None, format="DD/MM/YYYY")
@@ -932,6 +942,9 @@ elif modulo == "Historial":
                 df = df[df["Fecha de revisión"] >= pd.Timestamp(desde)]
             if hasta:
                 df = df[df["Fecha de revisión"] < pd.Timestamp(hasta) + pd.Timedelta(days=1)]
+            c1.metric("Revisiones", len(df))
+            c2.metric("Completas", int(df["estatus"].eq("Completo").sum()))
+            c3.metric("No completas", int(df["estatus"].ne("Completo").sum()))
             concentrado = construir_concentrado(df, respuestas, requisitos)
             snapshots = consultar_tabla("checklist_asig")
             por_revision = {}
@@ -1076,13 +1089,12 @@ elif modulo == "Dashboard":
             st.caption("Selección: " + " · ".join(valores))
         a,c=st.columns(2)
         doc=a.selectbox("Documento pendiente",["Todos"]+list(nombres.values()),key="dash_doc")
-        resultado=c.selectbox("Situación general",["Todas","Completo","Con pendientes"],key="dash_resultado")
+        resultado=c.selectbox("Situación general",["Todas","Completo","Con pendientes","Histórico incompleto","No aplica"],key="dash_resultado")
         if doc!="Todos":
             g=largo
             if doc!="Todos": g=g[g["Requisito"]==doc]
             detalle=detalle[detalle["id"].isin(g.loc[g["Respuesta"].eq("NO"),"id"])]
-        if resultado=="Con pendientes": detalle=detalle[detalle["Resultado"].isin(["Con pendientes","Histórico incompleto"])]
-        elif resultado!="Todas": detalle=detalle[detalle["Resultado"]==resultado]
+        if resultado!="Todas": detalle=detalle[detalle["Resultado"]==resultado]
         st.metric("Unidades seleccionadas",len(detalle))
         if filtro and filtro[0]=="asig":
             visibles=set(detalle["serie"])
@@ -1125,14 +1137,14 @@ elif modulo == "Dashboard":
                 st.button("Abrir checklist", on_click=abrir_checklist)
         if not concentrado.empty:
             st.download_button("Descargar detalle Excel",excel_concentrado(concentrado),"Dashboard_Casanova.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        pendientes_excel = [{k:v for k,v in fila.items() if k != "id"} for fila in pendientes_base if fila["id"] in set(detalle["id"]) and (not filtro or filtro[0] != "antiguedad" or fila["Rango"] == filtro[1][0]) and (not filtro or filtro[0] != "documento" or fila["Pendiente"] == filtro[1][0])]
+        pendientes_excel = [{k:v for k,v in fila.items() if k != "id"} for fila in pendientes_base if fila["id"] in set(detalle["id"]) and (doc == "Todos" or fila["Pendiente"] == doc) and (not filtro or filtro[0] != "antiguedad" or fila["Rango"] == filtro[1][0]) and (not filtro or filtro[0] != "documento" or fila["Pendiente"] == filtro[1][0])]
         if pendientes_excel:
             if filtro and filtro[0] in ("antiguedad", "documento"):
                 st.dataframe(pd.DataFrame(pendientes_excel)[["Serie", "Placa", "Pendiente", "Días de pendiente"]], hide_index=True, use_container_width=True)
             st.download_button("Descargar pendientes Excel", excel_concentrado(pd.DataFrame(pendientes_excel)), "Pendientes_Casanova.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.divider()
         def estilo(fig, altura=190):
-            fig.update_layout(height=altura, margin=dict(l=8,r=12,t=12,b=8) if not any(getattr(t,"orientation",None)=="h" for t in fig.data) else dict(l=16,r=24,t=32,b=38), font=dict(size=16, color="#213769", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend_title_text="")
+            fig.update_layout(height=altura, margin=dict(l=8,r=12,t=12,b=8) if not any(getattr(t,"orientation",None)=="h" for t in fig.data) else dict(l=16,r=24,t=32,b=38), font=dict(size=16, color="#111111", family="Montserrat, Century Gothic, Arial, sans-serif"), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend_title_text="")
             return fig
         def seleccion(fig, key, destino, altura=190):
             def al_seleccionar():
@@ -1351,6 +1363,7 @@ elif modulo == "Carga de ASIG" and consulta_general:
                 st.warning("No hay folios válidos para cargar.")
                 st.stop()
 
+            st.caption(f"Vista previa: {min(100, len(df)):,} de {len(df):,} folios.")
             st.dataframe(
                 df.head(100).assign(fecha_creacion=lambda d: d["fecha_creacion"].map(fecha_asig)),
                 hide_index=True
@@ -1650,3 +1663,4 @@ elif modulo == "Mi contraseña":
                 st.success("Contraseña actualizada.")
             except Exception:
                 st.error("No se pudo cambiar la contraseña. Verifica la contraseña actual.")
+
