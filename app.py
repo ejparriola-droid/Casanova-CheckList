@@ -357,6 +357,54 @@ def permite_no_aplica(requisito):
     return nombre in {"permiso antra estampa", "permiso antra documento", "permisos antra", "permiso antra"}
 
 
+
+def asegurar_requisito_engomado():
+    """
+    Crea PRESENTA ENGOMADO una sola vez en checklist_requisitos.
+    Se coloca inmediatamente después del requisito de placa que tenga
+    el mayor orden entre PLACA TRASERA y PLACA DELANTERA.
+    """
+    privado = cliente_privado()
+    existentes = (
+        privado.table("checklist_requisitos")
+        .select("*")
+        .execute()
+        .data
+        or []
+    )
+
+    nombre_nuevo = "PRESENTA ENGOMADO"
+    if any(
+        normalizar_texto(r.get("requisito", "")) == normalizar_texto(nombre_nuevo)
+        for r in existentes
+    ):
+        return
+
+    placas = [
+        r for r in existentes
+        if normalizar_texto(r.get("requisito", ""))
+        in {"placa trasera", "placa delantera"}
+    ]
+
+    if len(placas) < 2:
+        raise ValueError(
+            "No se encontraron PLACA TRASERA y PLACA DELANTERA "
+            "en checklist_requisitos; no se agregó PRESENTA ENGOMADO."
+        )
+
+    placa_posterior = max(placas, key=lambda r: int(r.get("orden") or 0))
+    nuevo_orden = int(placa_posterior.get("orden") or 0) + 1
+
+    privado.table("checklist_requisitos").insert({
+        "categoria": placa_posterior["categoria"],
+        "requisito": nombre_nuevo,
+        "requiere_fecha": False,
+        "nombre_campo_fecha": None,
+        "activo": True,
+        "orden": nuevo_orden
+    }).execute()
+
+
 def estado_respuesta(r):
     if r is None:
         return "SIN REGISTRO"
@@ -746,6 +794,8 @@ if modulo == "Capturar checklist" and puede_capturar:
         st.subheader("📝 Checklist documental")
 
         try:
+            # Agrega PRESENTA ENGOMADO una sola vez, sin duplicarlo.
+            asegurar_requisito_engomado()
 
             requisitos = (
                 db.table("checklist_requisitos")
@@ -756,8 +806,9 @@ if modulo == "Capturar checklist" and puede_capturar:
                 .data
             )
 
-        except Exception:
-            st.error("No fue posible cargar el checklist.")
+        except Exception as error:
+            st.error("No fue posible cargar el checklist ni verificar PRESENTA ENGOMADO.")
+            st.caption(f"Diagnóstico: {type(error).__name__}: {error}")
             st.stop()
 
         if not requisitos:
@@ -987,6 +1038,13 @@ elif modulo == "Dashboard":
             st.info("No hay revisiones o requisitos activos disponibles.")
             st.stop()
         df["Sucursal"] = df["sucursal_id"].map(mapa_sucursales).fillna("Sin información")
+        df["Unidad de negocio"] = (
+            df["unidad_negocio"]
+            .fillna("Sin información")
+            .astype(str)
+            .str.strip()
+            .replace("", "Sin información")
+        )
         df["Fecha de revisión"] = pd.to_datetime(df["fecha_revision"], utc=True, errors="coerce", format="mixed").dt.tz_convert("America/Mexico_City").dt.tz_localize(None)
         ids_vigentes = set()
         offset = 0
@@ -1013,7 +1071,7 @@ elif modulo == "Dashboard":
             return "Completo"
         ult["Resultado"] = ult["id"].map({i: clasificar(g) for i,g in largo.groupby("id")})
         def limpiar_dashboard():
-            for k, v in {"dash_serie":"", "dash_suc":"Todas", "dash_capt":"Todos", "dash_resultado":"Todos", "dash_doc":"Todos", "dash_desde":None, "dash_hasta":None}.items():
+            for k, v in {"dash_serie":"", "dash_suc":"Todas", "dash_capt":"Todos", "dash_unidad_negocio":"Todas", "dash_resultado":"Todos", "dash_doc":"Todos", "dash_desde":None, "dash_hasta":None}.items():
                 st.session_state[k] = v
             st.session_state.pop("dash_filtro", None)
             st.session_state["dash_reset"] = st.session_state.get("dash_reset", 0) + 1
@@ -1029,6 +1087,26 @@ elif modulo == "Dashboard":
         if st.session_state.get("dash_capt") not in opciones_capt:
             st.session_state["dash_capt"] = "Todos"
         capt = c.selectbox("Capturista", opciones_capt, key="dash_capt", on_change=cambiar_filtros_dashboard)
+
+        # Las opciones de Unidad de negocio respetan primero la sucursal
+        # y el capturista seleccionados, igual que el filtro de capturista.
+        base_unidad_negocio = ult.copy()
+        if suc != "Todas":
+            base_unidad_negocio = base_unidad_negocio[base_unidad_negocio["Sucursal"].eq(suc)]
+        if capt != "Todos":
+            base_unidad_negocio = base_unidad_negocio[base_unidad_negocio["usuario"].eq(capt)]
+        opciones_unidad_negocio = ["Todas"] + sorted(
+            base_unidad_negocio["Unidad de negocio"].dropna().unique().tolist()
+        )
+        if st.session_state.get("dash_unidad_negocio") not in opciones_unidad_negocio:
+            st.session_state["dash_unidad_negocio"] = "Todas"
+        unidad_negocio = st.selectbox(
+            "Unidad de Negocio",
+            opciones_unidad_negocio,
+            key="dash_unidad_negocio",
+            on_change=cambiar_filtros_dashboard
+        )
+
         a,b,c = st.columns(3)
         if st.session_state.get("dash_resultado") not in ["Todos","Completo","Con pendientes","No aplica"]:
             st.session_state["dash_resultado"] = "Todos"
@@ -1045,6 +1123,8 @@ elif modulo == "Dashboard":
             ult = ult[ult["serie"].str.contains(t, case=False, regex=False, na=False) | ult["placa"].str.contains(t, case=False, regex=False, na=False)]
         if suc != "Todas": ult = ult[ult["Sucursal"].eq(suc)]
         if capt != "Todos": ult = ult[ult["usuario"].eq(capt)]
+        if unidad_negocio != "Todas":
+            ult = ult[ult["Unidad de negocio"].eq(unidad_negocio)]
         if desde: ult = ult[ult["Fecha de revisión"] >= pd.Timestamp(desde)]
         if hasta: ult = ult[ult["Fecha de revisión"] < pd.Timestamp(hasta) + pd.Timedelta(days=1)]
         if resultado == "No aplica":
